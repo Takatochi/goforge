@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     if (stay_alive) {
         std::cout << "[goforge] Try: curl -H \"Authorization: Bearer demo-secret\" http://127.0.0.1:"
                   << server.port() << "/api/v1/users/1\n";
-        app->run();
+        app->run_until_signal();
         return 0;
     }
 

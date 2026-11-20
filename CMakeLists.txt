@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.3.0 LANGUAGES CXX)
+project(goforge VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ endif()
 
 option(GOFORGE_BUILD_TESTS "Build goforge unit and integration tests" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_BUILD_EXAMPLES "Build goforge example applications" ${GOFORGE_IS_TOP_LEVEL})
+option(GOFORGE_BUILD_BENCHMARKS "Build goforge HTTP performance benchmarks" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_ENABLE_ASIO "Enable standalone Asio for non-blocking HTTP networking" ON)
 set(GOFORGE_LOCAL_GORUN_DIR "" CACHE PATH "Optional local path to gorun repository (auto-detects ../Rutine if present)")
 
@@ -109,6 +110,10 @@ if(GOFORGE_BUILD_TESTS)
         add_executable(goforge_stage3_tests tests/test_stage3_web.cpp)
         target_link_libraries(goforge_stage3_tests PRIVATE goforge::goforge)
         add_test(NAME goforge_stage3_tests COMMAND goforge_stage3_tests)
+
+        add_executable(goforge_stage4_tests tests/test_stage4_prod.cpp)
+        target_link_libraries(goforge_stage4_tests PRIVATE goforge::goforge)
+        add_test(NAME goforge_stage4_tests COMMAND goforge_stage4_tests)
     endif()
 endif()
 
@@ -123,4 +128,12 @@ if(GOFORGE_BUILD_EXAMPLES)
         add_executable(goforge_example_03_rest examples/03_rest_api_gin_fx.cpp)
         target_link_libraries(goforge_example_03_rest PRIVATE goforge::goforge)
     endif()
+endif()
+
+if(GOFORGE_BUILD_BENCHMARKS AND GOFORGE_ENABLE_ASIO)
+    add_executable(bench_goforge_http benchmarks/bench_goforge_http.cpp)
+    target_link_libraries(bench_goforge_http PRIVATE goforge::goforge)
+
+    add_executable(bench_std_http benchmarks/bench_std_http.cpp)
+    target_link_libraries(bench_std_http PRIVATE goforge::goforge)
 endif()

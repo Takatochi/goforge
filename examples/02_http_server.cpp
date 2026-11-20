@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
 
     if (stay_alive) {
         std::cout << "[goforge] Press Ctrl+C to stop...\n";
-        app->run();
+        app->run_until_signal();
         return 0;
     }
 

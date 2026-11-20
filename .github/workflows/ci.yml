@@ -1,0 +1,57 @@
+name: CI — Build & Test goforge
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Ubuntu 24.04 (GCC, Release)"
+            os: ubuntu-latest
+            compiler: g++
+            generator: "Unix Makefiles"
+          - name: "Ubuntu 24.04 (Clang, Release)"
+            os: ubuntu-latest
+            compiler: clang++
+            generator: "Unix Makefiles"
+          - name: "Windows x64 (MinGW-w64 GCC, Release)"
+            os: windows-latest
+            compiler: g++
+            generator: "MinGW Makefiles"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -G "${{ matrix.generator }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DGOFORGE_BUILD_TESTS=ON \
+            -DGOFORGE_BUILD_EXAMPLES=ON \
+            -DGOFORGE_BUILD_BENCHMARKS=ON \
+            -DGOFORGE_ENABLE_ASIO=ON
+        shell: bash
+
+      - name: Build All Targets
+        run: cmake --build build --parallel
+        shell: bash
+
+      - name: Run All Stage 1-4 Test Suites
+        run: ctest --test-dir build --output-on-failure
+        shell: bash
+
+      - name: Run HTTP Benchmark Sanity Check
+        run: ./build/bench_goforge_http
+        shell: bash

@@ -92,10 +92,7 @@ class HttpServer {
                     break;
                 }
 
-                auto [read_ctx, cancel_read] = gorun::with_timeout(server_ctx_, config_.read_timeout);
-                GORUN_DEFER { cancel_read(); };
-
-                auto [n, ec] = sock.read_some(chunk, sizeof(chunk), read_ctx);
+                auto [n, ec] = sock.read_some(chunk, sizeof(chunk), server_ctx_, config_.read_timeout);
                 if (ec || n == 0) {
                     read_failed = true;
                     break;
@@ -126,10 +123,7 @@ class HttpServer {
             // 2. Read remaining body bytes if Content-Length > 0
             const std::size_t total_msg_size = parsed.header_end_pos + parsed.content_length;
             while (recv_buf.size() < total_msg_size) {
-                auto [read_ctx, cancel_read] = gorun::with_timeout(server_ctx_, config_.read_timeout);
-                GORUN_DEFER { cancel_read(); };
-
-                auto [n, ec] = sock.read_some(chunk, sizeof(chunk), read_ctx);
+                auto [n, ec] = sock.read_some(chunk, sizeof(chunk), server_ctx_, config_.read_timeout);
                 if (ec || n == 0) {
                     read_failed = true;
                     break;
@@ -170,10 +164,7 @@ class HttpServer {
 
             // 4. Write serialized HTTP/1.1 response without blocking OS workers
             std::string wire = resp.serialize(keep_alive);
-            auto [write_ctx, cancel_write] = gorun::with_timeout(server_ctx_, config_.write_timeout);
-            GORUN_DEFER { cancel_write(); };
-
-            auto [written, wec] = sock.write_all(wire, write_ctx);
+            auto [written, wec] = sock.write_all(wire, server_ctx_, config_.write_timeout);
             if (wec || written != wire.size()) {
                 break;
             }

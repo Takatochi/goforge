@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -173,6 +174,42 @@ public:
         start();
         (void)shutdown_signal_ch_.recv();
         stop();
+    }
+
+    /**
+     * @brief Starts the application, installs `SIGINT` / `SIGTERM` signal handlers, parks until either
+     *        an OS termination signal arrives or `request_shutdown()` is called, then runs graceful `stop()`.
+     */
+    void run_until_signal() {
+        signal_flag().store(false, std::memory_order_release);
+        std::signal(SIGINT, &App::on_os_signal);
+        std::signal(SIGTERM, &App::on_os_signal);
+
+        start();
+
+        // Lightweight signal-polling green routine (does not block any OS worker thread)
+        gorun::go([this]() {
+            while (!app_ctx_.is_canceled() && !stopped_.load(std::memory_order_acquire)) {
+                if (signal_flag().load(std::memory_order_acquire)) {
+                    request_shutdown();
+                    return;
+                }
+                gorun::sleep_for(std::chrono::milliseconds(25));
+            }
+        });
+
+        (void)shutdown_signal_ch_.recv();
+        stop();
+    }
+
+private:
+    static std::atomic<bool>& signal_flag() noexcept {
+        static std::atomic<bool> flag{false};
+        return flag;
+    }
+
+    static void on_os_signal(int) noexcept {
+        signal_flag().store(true, std::memory_order_release);
     }
 };
 
