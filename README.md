@@ -44,8 +44,10 @@ Created by **Artur Havor** and licensed under the **Apache License 2.0**.
   - `Lifecycle` (`OnStart` in FIFO order with automatic reverse rollback on failure; `OnStop` in LIFO order).
   - `BlockingPool::run(...)` for offloading synchronous C drivers (e.g., `libpq`, `sqlite3`) onto dedicated OS threads while parking the calling `gorun` routine on a `gorun::Channel`.
   - `AppBuilder` / `App` with `spawn_background(ctx)`, `run()`, `request_shutdown()`, and graceful `stop()`.
-- **Stage 2 (Next): Non-Blocking HTTP/1.1 Server on Standalone Asio + `gorun`**
-  - Bridge Asio async socket operations (`async_accept`, `async_read_some`, `async_write`) to `gorun` green routine parking (1 request = 1 green routine, zero OS-thread blocking).
+- **Stage 2 (Completed): Non-Blocking HTTP/1.1 Server on Standalone Asio + `gorun`**
+  - `goforge::net::AsioExecutor`, `AsyncTcpSocket`, and `AsyncTcpAcceptor` bridge Asio async completions (`async_accept`, `async_read_some`, `async_write`, `async_connect`) into `gorun::Channel` + `gorun::select` with `gorun::Context` cancellation/timeout support and zero OS-thread blocking on `gorun` workers.
+  - Incremental HTTP/1.1 parser & serializer (`HttpRequest`, `HttpResponse`, case-insensitive `HeaderMap`, `Content-Length` bounds, Keep-Alive connection reuse).
+  - `HttpServer` executes every accepted connection on its own `gorun::go(...)` green routine, isolates handler exceptions into `500 Internal Server Error`, limits concurrency via `gorun::Semaphore`, and integrates with `goforge::Lifecycle` for graceful draining.
 - **Stage 3 (Planned): Gin-Style Router, `HttpContext` & Middleware Chain**
   - Radix-tree router (`:id`, `*filepath`), `RouteGroup`, `next()` middleware pipeline, `Recovery` & `Timeout` middleware, and automatic `ServiceScope` per HTTP request.
 - **Stage 4 (Planned): Production Features & Benchmarks**
@@ -53,19 +55,17 @@ Created by **Artur Havor** and licensed under the **Apache License 2.0**.
 
 ---
 
-## Building & Running Stage 1
+## Building & Running (Stages 1 & 2)
 
-`CMakeLists.txt` automatically detects a sibling `../Rutine` checkout of `gorun` for instant offline builds, or fetches `gorun v0.3.0-alpha` from GitHub via `FetchContent`.
+`CMakeLists.txt` automatically detects a sibling `../Rutine` checkout of `gorun` for instant offline builds (or fetches `gorun v0.3.0-alpha` from GitHub via `FetchContent`), and fetches header-only Standalone Asio (`asio-1-32-0`) for non-blocking networking.
 
 ```powershell
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+
+# Run examples:
 .\build\goforge_example_01_di.exe
-```
-
-To enable standalone Asio preparation (for Stage 2):
-
-```powershell
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGOFORGE_ENABLE_ASIO=ON
+.\build\goforge_example_02_http.exe          # self-test with 16 concurrent clients
+.\build\goforge_example_02_http.exe --serve  # listen on http://127.0.0.1:8080
 ```

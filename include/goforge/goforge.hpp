@@ -9,3 +9,9 @@
 #include "goforge/lifecycle.hpp"
 #include "goforge/blocking_pool.hpp"
 #include "goforge/app.hpp"
+#include "goforge/http/http_types.hpp"
+
+#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#include "goforge/net/asio_bridge.hpp"
+#include "goforge/http/http_server.hpp"
+#endif

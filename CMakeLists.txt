@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.1.0 LANGUAGES CXX)
+project(goforge VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,7 @@ endif()
 
 option(GOFORGE_BUILD_TESTS "Build goforge unit and integration tests" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_BUILD_EXAMPLES "Build goforge example applications" ${GOFORGE_IS_TOP_LEVEL})
-option(GOFORGE_ENABLE_ASIO "Fetch standalone Asio for Stage 2 non-blocking HTTP networking" OFF)
+option(GOFORGE_ENABLE_ASIO "Enable standalone Asio for non-blocking HTTP networking" ON)
 set(GOFORGE_LOCAL_GORUN_DIR "" CACHE PATH "Optional local path to gorun repository (auto-detects ../Rutine if present)")
 
 # ----------------------------------------------------------------------------
@@ -47,7 +47,7 @@ if(NOT TARGET gorun::gorun)
 endif()
 
 # ----------------------------------------------------------------------------
-# Dependency 2 (Stage 2): Optional Standalone Asio (header-only)
+# Dependency 2: Standalone Asio (header-only non-blocking I/O reactor)
 # ----------------------------------------------------------------------------
 if(GOFORGE_ENABLE_ASIO)
     FetchContent_Declare(
@@ -59,9 +59,10 @@ if(GOFORGE_ENABLE_ASIO)
     FetchContent_MakeAvailable(asio)
 
     add_library(goforge_asio INTERFACE)
-    target_include_directories(goforge_asio INTERFACE "${asio_SOURCE_DIR}/asio/include")
-    target_compile_definitions(goforge_asio INTERFACE ASIO_STANDALONE)
+    target_include_directories(goforge_asio SYSTEM INTERFACE "${asio_SOURCE_DIR}/asio/include")
+    target_compile_definitions(goforge_asio INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
     if(WIN32)
+        target_compile_definitions(goforge_asio INTERFACE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
         target_link_libraries(goforge_asio INTERFACE ws2_32 mswsock)
     endif()
 endif()
@@ -91,16 +92,28 @@ else()
 endif()
 
 # ----------------------------------------------------------------------------
-# Stage 1 Tests & Examples
+# Tests & Examples
 # ----------------------------------------------------------------------------
 if(GOFORGE_BUILD_TESTS)
     enable_testing()
+
     add_executable(goforge_stage1_tests tests/test_stage1_di.cpp)
     target_link_libraries(goforge_stage1_tests PRIVATE goforge::goforge)
     add_test(NAME goforge_stage1_tests COMMAND goforge_stage1_tests)
+
+    if(GOFORGE_ENABLE_ASIO)
+        add_executable(goforge_stage2_tests tests/test_stage2_http.cpp)
+        target_link_libraries(goforge_stage2_tests PRIVATE goforge::goforge)
+        add_test(NAME goforge_stage2_tests COMMAND goforge_stage2_tests)
+    endif()
 endif()
 
 if(GOFORGE_BUILD_EXAMPLES)
     add_executable(goforge_example_01_di examples/01_di_and_lifecycle.cpp)
     target_link_libraries(goforge_example_01_di PRIVATE goforge::goforge)
+
+    if(GOFORGE_ENABLE_ASIO)
+        add_executable(goforge_example_02_http examples/02_http_server.cpp)
+        target_link_libraries(goforge_example_02_http PRIVATE goforge::goforge)
+    endif()
 endif()
