@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.2.0 LANGUAGES CXX)
+project(goforge VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +105,10 @@ if(GOFORGE_BUILD_TESTS)
         add_executable(goforge_stage2_tests tests/test_stage2_http.cpp)
         target_link_libraries(goforge_stage2_tests PRIVATE goforge::goforge)
         add_test(NAME goforge_stage2_tests COMMAND goforge_stage2_tests)
+
+        add_executable(goforge_stage3_tests tests/test_stage3_web.cpp)
+        target_link_libraries(goforge_stage3_tests PRIVATE goforge::goforge)
+        add_test(NAME goforge_stage3_tests COMMAND goforge_stage3_tests)
     endif()
 endif()
 
@@ -115,5 +119,8 @@ if(GOFORGE_BUILD_EXAMPLES)
     if(GOFORGE_ENABLE_ASIO)
         add_executable(goforge_example_02_http examples/02_http_server.cpp)
         target_link_libraries(goforge_example_02_http PRIVATE goforge::goforge)
+
+        add_executable(goforge_example_03_rest examples/03_rest_api_gin_fx.cpp)
+        target_link_libraries(goforge_example_03_rest PRIVATE goforge::goforge)
     endif()
 endif()

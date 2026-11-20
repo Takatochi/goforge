@@ -48,14 +48,17 @@ Created by **Artur Havor** and licensed under the **Apache License 2.0**.
   - `goforge::net::AsioExecutor`, `AsyncTcpSocket`, and `AsyncTcpAcceptor` bridge Asio async completions (`async_accept`, `async_read_some`, `async_write`, `async_connect`) into `gorun::Channel` + `gorun::select` with `gorun::Context` cancellation/timeout support and zero OS-thread blocking on `gorun` workers.
   - Incremental HTTP/1.1 parser & serializer (`HttpRequest`, `HttpResponse`, case-insensitive `HeaderMap`, `Content-Length` bounds, Keep-Alive connection reuse).
   - `HttpServer` executes every accepted connection on its own `gorun::go(...)` green routine, isolates handler exceptions into `500 Internal Server Error`, limits concurrency via `gorun::Semaphore`, and integrates with `goforge::Lifecycle` for graceful draining.
-- **Stage 3 (Planned): Gin-Style Router, `HttpContext` & Middleware Chain**
-  - Radix-tree router (`:id`, `*filepath`), `RouteGroup`, `next()` middleware pipeline, `Recovery` & `Timeout` middleware, and automatic `ServiceScope` per HTTP request.
-- **Stage 4 (Planned): Production Features & Benchmarks**
-  - Graceful HTTP connection draining, structured logging, health/metrics endpoints, and RPS/p99 benchmarks against Go/Gin and thread-per-request C++.
+- **Stage 3 (Completed): Gin-Style Router, `HttpContext` & Middleware Chain**
+  - Segment trie `Router` supporting static priority, named parameters (`:id`), catch-all wildcards (`*filepath`), nested `RouteGroup`s, custom `no_route`, and automatic `405 Method Not Allowed` with `Allow` header.
+  - `HttpContext` with URL-decoded query parameters, typed `param_as<T>` / `query_as<T>`, Gin-style key-value bag (`set`/`get`), `gorun::Context` cancellation, response builders (`text`, `json`, `no_content`), and `next()` / `abort()`.
+  - DI-aware route handlers (`[](HttpContext& c, IUserRepository& repo, RequestTrace& trace)`) with automatic per-request `ServiceScope` creation and deterministic destruction.
+  - Built-in middleware: `recovery`, `request_logger`, `timeout` (`504 Gateway Timeout` via `gorun::with_timeout`), `rate_limit` (`gorun::Semaphore` backpressure or `429`), and `bearer_auth`.
+- **Stage 4 (Next): Production Features & Benchmarks**
+  - Structured JSON logging, built-in `/healthz` & `/metrics` (RPS, latency histogram, active connections), OS signal graceful shutdown (`SIGINT`/`SIGTERM`), and HTTP benchmarks against Go/Gin and thread-per-request C++.
 
 ---
 
-## Building & Running (Stages 1 & 2)
+## Building & Running (Stages 1–3)
 
 `CMakeLists.txt` automatically detects a sibling `../Rutine` checkout of `gorun` for instant offline builds (or fetches `gorun v0.3.0-alpha` from GitHub via `FetchContent`), and fetches header-only Standalone Asio (`asio-1-32-0`) for non-blocking networking.
 
@@ -67,5 +70,6 @@ ctest --test-dir build --output-on-failure
 # Run examples:
 .\build\goforge_example_01_di.exe
 .\build\goforge_example_02_http.exe          # self-test with 16 concurrent clients
-.\build\goforge_example_02_http.exe --serve  # listen on http://127.0.0.1:8080
+.\build\goforge_example_03_rest.exe          # full Fx + Gin REST API self-test
+.\build\goforge_example_03_rest.exe --serve  # listen on http://127.0.0.1:8080
 ```

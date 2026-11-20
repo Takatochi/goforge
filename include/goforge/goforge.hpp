@@ -10,6 +10,9 @@
 #include "goforge/blocking_pool.hpp"
 #include "goforge/app.hpp"
 #include "goforge/http/http_types.hpp"
+#include "goforge/web/context.hpp"
+#include "goforge/web/router.hpp"
+#include "goforge/web/middleware.hpp"
 
 #if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
 #include "goforge/net/asio_bridge.hpp"
