@@ -88,6 +88,7 @@ struct Query {
     [[nodiscard]] bool has_value() const noexcept { return value.has_value(); }
     explicit operator bool() const noexcept { return value.has_value(); }
     [[nodiscard]] const T& operator*() const { return *value; }
+    [[nodiscard]] const T* operator->() const { return &(*value); }
     [[nodiscard]] T value_or(T fallback) const { return value.value_or(std::move(fallback)); }
 };
 
@@ -101,6 +102,7 @@ struct Header {
     [[nodiscard]] bool has_value() const noexcept { return value.has_value(); }
     explicit operator bool() const noexcept { return value.has_value(); }
     [[nodiscard]] const std::string& operator*() const { return *value; }
+    [[nodiscard]] const std::string* operator->() const { return &(*value); }
     [[nodiscard]] std::string value_or(std::string fallback) const { return value.value_or(std::move(fallback)); }
 };
 

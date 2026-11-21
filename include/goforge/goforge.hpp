@@ -25,3 +25,11 @@
 #endif
 
 #include "goforge/web_app.hpp"
+
+#include "goforge/data/sql_compiler.hpp"
+#include "goforge/data/driver.hpp"
+#include "goforge/data/db_context.hpp"
+
+#if defined(GOFORGE_HAS_SQLITE) && GOFORGE_HAS_SQLITE
+#include "goforge/data/sqlite_driver.hpp"
+#endif

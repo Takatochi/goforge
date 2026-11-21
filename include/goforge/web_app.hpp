@@ -317,6 +317,15 @@ public:
         return *this;
     }
 
+    template <typename Interface, typename Impl>
+        requires std::is_base_of_v<Interface, Impl>
+    WebApp& instance(std::shared_ptr<Impl> ptr) {
+        state_->builder.services().template add_instance<Interface>(
+            std::static_pointer_cast<Interface>(std::move(ptr))
+        );
+        return *this;
+    }
+
     template <typename T>
     WebApp& instance(T&& value) {
         state_->builder.provide_instance(std::forward<T>(value));

@@ -29,17 +29,17 @@ def expand(rel_path: str) -> str:
 
     text = (INCLUDE_DIR / rel_path).read_text(encoding="utf-8")
     out = [f"// ---- begin {rel_path} ----"]
-    skip_asio_block = False
+    skip_optional_block = False
     for line in text.splitlines():
         stripped = line.strip()
         if stripped == "#pragma once":
             continue
-        if stripped.startswith("#if defined(GOFORGE_HAS_ASIO)"):
-            skip_asio_block = True
+        if stripped.startswith("#if defined(GOFORGE_HAS_ASIO)") or stripped.startswith("#if defined(GOFORGE_HAS_SQLITE)"):
+            skip_optional_block = True
             continue
-        if skip_asio_block:
+        if skip_optional_block:
             if stripped == "#endif":
-                skip_asio_block = False
+                skip_optional_block = False
             continue
         match = LOCAL_INCLUDE.match(line)
         if match:
