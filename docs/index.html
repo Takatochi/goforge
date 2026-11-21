@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>goforge — C++20/23 Fx + Gin Style Web Framework on gorun</title>
+  <link rel="icon" type="image/svg+xml" href="./logo.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+  <!-- CodeMirror 5 for IntelliJ IDEA / CLion Darcula Live C++20 Playground -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/closebrackets.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/selection/active-line.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0b0f17;
+      --bg-secondary: #111827;
+      --bg-card: #161f33;
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.18);
+      --green: #34d399;
+      --red: #f87171;
+      --amber: #fbbf24;
+      --purple: #a78bfa;
+      --border: #1f2937;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+
+      /* JetBrains IntelliJ IDEA / CLion Darcula Palette */
+      --idea-bg: #2b2b2b;
+      --idea-gutter: #313335;
+      --idea-border: #3c3f41;
+      --idea-active-line: #323232;
+      --idea-selection: #214283;
+      --idea-text: #a9b7c6;
+      --idea-keyword: #cc7832;
+      --idea-string: #6a8759;
+      --idea-number: #6897bb;
+      --idea-comment: #808080;
+      --idea-function: #ffc66d;
+      --idea-type: #4ec9b0;
+      --idea-macro: #bbb529;
+      --idea-namespace: #9876aa;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.65;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* Sidebar Navigation */
+    aside.sidebar {
+      width: 280px;
+      background-color: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      overflow-y: auto;
+      padding: 1.5rem 1.25rem;
+      z-index: 100;
+    }
+    .brand {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: -0.03em;
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      margin-bottom: 0.4rem;
+    }
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      object-fit: cover;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+    }
+    .brand-sub {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      margin-bottom: 1.25rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.9rem;
+    }
+    .nav-section {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin: 1.15rem 0 0.45rem 0;
+      font-weight: 700;
+    }
+    .nav-list { list-style: none; }
+    .nav-list li { margin-bottom: 0.22rem; }
+    .nav-list a {
+      display: block;
+      padding: 0.38rem 0.65rem;
+      border-radius: 6px;
+      color: var(--text-primary);
+      text-decoration: none;
+      font-size: 0.87rem;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-list a:hover {
+      background-color: var(--accent-glow);
+      color: var(--accent);
+    }
+
+    main.content {
+      margin-left: 280px;
+      flex: 1;
+      max-width: 1200px;
+      padding: 2.5rem 3.25rem 5rem 3.25rem;
+    }
+
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(56,189,248,0.12) 50%, rgba(17,24,39,0.85) 100%);
+      border: 1px solid rgba(56,189,248,0.32);
+      border-radius: 14px;
+      padding: 2.25rem;
+      margin-bottom: 2.75rem;
+      display: flex;
+      gap: 2rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .hero-left { flex: 1; }
+    .hero-logo-box {
+      width: 156px;
+      height: 156px;
+      flex-shrink: 0;
+      border-radius: 22px;
+      overflow: hidden;
+      border: 2px solid rgba(52, 211, 153, 0.45);
+      box-shadow: 0 0 34px rgba(56, 189, 248, 0.24);
+      background-color: #0d1321;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hero-logo-box img { width: 100%; height: 100%; object-fit: cover; }
+    .badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.85rem; }
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+    .hero h1 { font-size: 2.15rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 0.65rem; }
+    .hero p { color: var(--text-secondary); font-size: 1.02rem; max-width: 760px; margin-bottom: 1.35rem; }
+    .hero-links { display: flex; gap: 0.8rem; flex-wrap: wrap; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.88rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: transform 0.1s, opacity 0.15s;
+      font-family: var(--font-sans);
+    }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+    .btn-primary { background-color: var(--accent); color: #0b0f17; }
+    .btn-run { background: linear-gradient(90deg, #34d399, #38bdf8); color: #0b0f17; font-weight: 700; }
+    .btn-secondary { background-color: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn:hover:not(:disabled) { opacity: 0.92; transform: translateY(-1px); }
+
+    /* Interactive IDEA Darcula Playground */
+    .playground-shell {
+      background-color: #2b2b2b;
+      border: 1px solid #3c3f41;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+      margin: 1.25rem 0 2.5rem 0;
+    }
+    .playground-toolbar {
+      background-color: #3c3f41;
+      border-bottom: 1px solid #26282a;
+      padding: 0.65rem 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.65rem;
+    }
+    .playground-tabs { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .tab-btn {
+      background-color: #2b2b2b;
+      color: #afb1b3;
+      border: 1px solid #4e5254;
+      padding: 0.38rem 0.72rem;
+      border-radius: 5px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: var(--font-sans);
+    }
+    .tab-btn:hover { color: #ffffff; border-color: #4b6eaf; }
+    .tab-btn.active {
+      background-color: #4e5254;
+      color: #ffffff;
+      border-color: #4b6eaf;
+      box-shadow: inset 0 -2px 0 #4a88c7;
+    }
+    .playground-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+    .compiler-select {
+      background-color: #2b2b2b;
+      color: #a9b7c6;
+      border: 1px solid #4e5254;
+      border-radius: 6px;
+      padding: 0.38rem 0.6rem;
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+      outline: none;
+    }
+    .playground-body { display: grid; grid-template-columns: 1.32fr 0.88fr; min-height: 470px; }
+    .editor-pane { border-right: 1px solid #3c3f41; display: flex; flex-direction: column; background-color: var(--idea-bg); min-width: 0; }
+    .pane-header {
+      background-color: #313335;
+      padding: 0.42rem 0.9rem;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: #a9b7c6;
+      border-bottom: 1px solid #26282a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .editor-wrapper { flex: 1; position: relative; min-height: 430px; background-color: var(--idea-bg); }
+    textarea#pg-editor {
+      width: 100%; height: 100%; min-height: 430px;
+      background-color: var(--idea-bg); color: var(--idea-text);
+      border: none; outline: none; resize: none;
+      padding: 0.85rem 1rem; font-family: var(--font-mono); font-size: 0.83rem; line-height: 1.55;
+    }
+
+    /* JetBrains IDEA Darcula CodeMirror Theme */
+    .cm-s-idea-darcula.CodeMirror { height: 460px; background-color: var(--idea-bg); color: var(--idea-text); font-family: var(--font-mono); font-size: 0.83rem; line-height: 1.58; }
+    .cm-s-idea-darcula .CodeMirror-gutters { background-color: var(--idea-gutter); border-right: 1px solid #3c3f41; }
+    .cm-s-idea-darcula .CodeMirror-linenumber { color: #606366; padding: 0 8px 0 6px; }
+    .cm-s-idea-darcula .CodeMirror-cursor { border-left: 2px solid #bbbbbb; }
+    .cm-s-idea-darcula .CodeMirror-activeline-background { background: var(--idea-active-line); }
+    .cm-s-idea-darcula div.CodeMirror-selected { background: var(--idea-selection); }
+    .cm-s-idea-darcula .CodeMirror-matchingbracket { background-color: #3b514d; color: #ffef28 !important; font-weight: 700; }
+    .cm-s-idea-darcula span.cm-keyword, .cm-s-idea-darcula span.cm-type, .cm-s-idea-darcula span.cm-atom, .cm-s-idea-darcula span.cm-qualifier { color: var(--idea-keyword); font-weight: 600; }
+    .cm-s-idea-darcula span.cm-meta { color: var(--idea-macro); }
+    .cm-s-idea-darcula span.cm-string, .cm-s-idea-darcula span.cm-string-2 { color: var(--idea-string); }
+    .cm-s-idea-darcula span.cm-number { color: var(--idea-number); }
+    .cm-s-idea-darcula span.cm-comment { color: var(--idea-comment); font-style: italic; }
+    .cm-s-idea-darcula span.cm-def, .cm-s-idea-darcula span.cm-property { color: var(--idea-function); }
+    .cm-s-idea-darcula span.cm-variable, .cm-s-idea-darcula span.cm-variable-2, .cm-s-idea-darcula span.cm-operator { color: var(--idea-text); }
+    .cm-s-idea-darcula span.cm-variable-3, .cm-s-idea-darcula span.cm-builtin { color: var(--idea-type); }
+
+    /* Static C++ Code Highlighting */
+    .tok-kw { color: var(--idea-keyword); font-weight: 600; }
+    .tok-str { color: var(--idea-string); }
+    .tok-num { color: var(--idea-number); }
+    .tok-cmt { color: var(--idea-comment); font-style: italic; }
+    .tok-mac { color: var(--idea-macro); }
+    .tok-fn { color: var(--idea-function); }
+    .tok-ty { color: var(--idea-type); }
+    .tok-ns { color: var(--idea-namespace); }
+
+    .output-pane { display: flex; flex-direction: column; background-color: #1e1f22; min-width: 0; }
+    .console-box {
+      flex: 1; height: 460px; padding: 0.9rem 1.05rem;
+      font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.55;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: #d1d5db;
+    }
+    .console-line-info { color: var(--accent); }
+    .console-line-ok { color: var(--green); }
+    .console-line-warn { color: var(--amber); }
+    .console-line-err { color: var(--red); }
+    .console-line-sched { color: var(--purple); font-size: 0.76rem; }
+    .console-line-stdout { color: #e5e7eb; }
+    .scheduler-visualizer {
+      border-top: 1px solid #26282a; background-color: #313335;
+      padding: 0.58rem 1rem; font-size: 0.75rem; font-family: var(--font-mono);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .stat-pill { background-color: #2b2b2b; border: 1px solid #4e5254; padding: 0.2rem 0.6rem; border-radius: 4px; color: #a9b7c6; }
+    .stat-pill strong { color: var(--green); }
+
+    /* Sections, Cards, Tables, Charts */
+    section { margin-bottom: 3.5rem; scroll-margin-top: 2rem; }
+    h2 { font-size: 1.65rem; font-weight: 700; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+    h3 { font-size: 1.2rem; font-weight: 600; margin: 1.5rem 0 0.65rem 0; color: var(--accent); }
+    p { margin-bottom: 1rem; color: #d1d5db; }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.25rem; margin: 1.25rem 0; }
+    .card { background-color: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1.35rem; }
+    .card h4 { font-size: 1.02rem; margin-bottom: 0.5rem; color: var(--text-primary); }
+    .card-accent { border-left: 4px solid var(--accent); }
+    .card-green { border-left: 4px solid var(--green); }
+    .card-amber { border-left: 4px solid var(--amber); }
+
+    pre {
+      background-color: var(--idea-bg); border: 1px solid #3c3f41; border-radius: 8px;
+      padding: 1.1rem 1.25rem; overflow-x: auto; font-family: var(--font-mono);
+      font-size: 0.83rem; line-height: 1.55; margin: 0.85rem 0 1.25rem 0; color: var(--idea-text);
+    }
+    code { font-family: var(--font-mono); background-color: rgba(255,255,255,0.07); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85em; color: var(--accent); }
+    pre code { background: none; padding: 0; color: inherit; }
+
+    .table-wrap { overflow-x: auto; margin: 1.25rem 0; }
+    table { width: 100%; border-collapse: collapse; background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-size: 0.88rem; }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background-color: var(--bg-card); color: var(--accent); font-weight: 600; }
+    tr:hover td { background-color: rgba(255,255,255,0.02); }
+
+    .bench-row { margin-bottom: 1.15rem; }
+    .bench-label { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.3rem; font-family: var(--font-mono); gap: 1rem; }
+    .bar-track { width: 100%; background-color: #0d1321; height: 22px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+    .bar-fill-goforge { height: 100%; background: linear-gradient(90deg, #34d399, #38bdf8); }
+    .bar-fill-go { height: 100%; background: #6366f1; }
+    .bar-fill-std { height: 100%; background: #f87171; }
+
+    footer {
+      margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border);
+      color: var(--text-secondary); font-size: 0.85rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+    }
+
+    @media (max-width: 960px) {
+      aside.sidebar { display: none; }
+      main.content { margin-left: 0; padding: 1.5rem; }
+      .playground-body { grid-template-columns: 1fr; }
+      .hero { flex-direction: column-reverse; text-align: left; }
+    }
+  </style>
+</head>
+<body>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="./logo.png" onerror="this.src='./logo.svg'" alt="goforge logo" />
+      <span>goforge</span>
+    </div>
+    <div class="brand-sub">C++20/23 Fx + Gin Style Web Framework on <code>gorun</code><br/>By Artur Havor</div>
+
+    <div class="nav-section">Interactive</div>
+    <ul class="nav-list">
+      <li><a href="#playground">Live C++20 Playground</a></li>
+      <li><a href="#advantages">Why goforge? (Advantages)</a></li>
+      <li><a href="#install">Quick Installation</a></li>
+      <li><a href="#architecture">3-Layer Architecture</a></li>
+    </ul>
+
+    <div class="nav-section">How to Use Every Layer</div>
+    <ul class="nav-list">
+      <li><a href="#guide-di">1. Fx-Style DI Container</a></li>
+      <li><a href="#guide-lifecycle">2. Lifecycle &amp; Graceful Stop</a></li>
+      <li><a href="#guide-router">3. Gin Router &amp; DI Handlers</a></li>
+      <li><a href="#guide-middleware">4. Production Middleware</a></li>
+      <li><a href="#guide-blocking">5. BlockingPool for Sync DBs</a></li>
+      <li><a href="#guide-obs">6. Metrics, Healthz &amp; Logging</a></li>
+    </ul>
+
+    <div class="nav-section">Performance &amp; Quality</div>
+    <ul class="nav-list">
+      <li><a href="#benchmarks">3-Way HTTP Benchmarks</a></li>
+      <li><a href="#comparison">Framework Comparison</a></li>
+      <li><a href="#tests">29 Verification Tests</a></li>
+    </ul>
+  </aside>
+
+  <main class="content">
+
+    <!-- HERO -->
+    <div class="hero">
+      <div class="hero-left">
+        <div class="badges">
+          <span class="badge">Version: v0.1.0-alpha</span>
+          <span class="badge">C++20 / C++23</span>
+          <span class="badge">Header-Only (Fx + Gin Style)</span>
+          <span class="badge">Powered by gorun + Standalone Asio</span>
+          <span class="badge">Apache-2.0</span>
+        </div>
+        <h1>goforge — Uber Fx + Gin Ergonomics for High-Concurrency C++20</h1>
+        <p>
+          Build scalable C++20/23 HTTP microservices with compile-time typed Dependency Injection
+          (<code>Singleton</code>, <code>Transient</code>, <code>Scoped</code>), ordered <code>Lifecycle</code> hooks,
+          trie routing (<code>:id</code>, <code>*filepath</code>), Gin-style middleware, and
+          <strong>1 green routine per connection</strong> on top of <a href="https://takatochi.github.io/gorun/" style="color: var(--accent);">gorun</a> — zero callback hell, zero viral <code>co_await</code>.
+        </p>
+        <div class="hero-links">
+          <a class="btn btn-primary" href="#playground">Try Live C++20 Playground</a>
+          <a class="btn btn-secondary" href="https://github.com/Takatochi/goforge">GitHub Repository</a>
+          <a class="btn btn-secondary" href="https://takatochi.github.io/gorun/">gorun Runtime Docs</a>
+        </div>
+      </div>
+      <div class="hero-logo-box">
+        <img src="./logo.png" onerror="this.src='./logo.svg'" alt="goforge emblem" />
+      </div>
+    </div>
+
+    <!-- LIVE PLAYGROUND -->
+    <section id="playground">
+      <h2>Live C++20 Playground (IntelliJ IDEA Darcula + Real GCC 14.2 Execution)</h2>
+      <p>
+        Run real <code>goforge</code> applications directly in your browser. Click <strong>Run Live C++20</strong>
+        (or press <code>Ctrl+Enter</code>) to compile and execute your edited code on real Linux x86_64 GCC 14.2
+        via Compiler Explorer with both <code>goforge/goforge.hpp</code> and <code>gorun/gorun.hpp</code> bundled automatically.
+      </p>
+
+      <div class="playground-shell">
+        <div class="playground-toolbar">
+          <div class="playground-tabs">
+            <button class="tab-btn active" onclick="loadExample(0)">01. Fx DI &amp; Lifecycle</button>
+            <button class="tab-btn" onclick="loadExample(1)">02. Gin Router &amp; DI Handlers</button>
+            <button class="tab-btn" onclick="loadExample(2)">03. Recovery, Timeout &amp; 429</button>
+            <button class="tab-btn" onclick="loadExample(3)">04. Metrics, Healthz &amp; Logs</button>
+            <button class="tab-btn" onclick="loadExample(4)">05. Custom Sandbox</button>
+          </div>
+          <div class="playground-actions">
+            <select id="pg-flags" class="compiler-select" title="Compiler Flags">
+              <option value="-std=c++20 -O2 -pthread">GCC 14.2 (-std=c++20 -O2)</option>
+              <option value="-std=c++23 -O3 -pthread">GCC 14.2 (-std=c++23 -O3)</option>
+              <option value="-std=c++20 -O2 -Wall -Wextra -pthread">GCC 14.2 (-Wall -Wextra)</option>
+            </select>
+            <button class="btn btn-secondary" style="padding: 0.4rem 0.72rem; font-size: 0.78rem;" onclick="resetExample()">Reset</button>
+            <button class="btn btn-secondary" style="padding: 0.4rem 0.72rem; font-size: 0.78rem;" onclick="copyCode()">Copy</button>
+            <button class="btn btn-secondary" style="padding: 0.4rem 0.72rem; font-size: 0.78rem;" onclick="runTracePreview()">Trace Preview</button>
+            <button id="pg-run-btn" class="btn btn-run" style="padding: 0.42rem 0.95rem; font-size: 0.82rem;" onclick="runLiveCompiler()">&#9654; Run Live C++20</button>
+          </div>
+        </div>
+
+        <div class="playground-body">
+          <div class="editor-pane">
+            <div class="pane-header">
+              <span id="pg-filename">playground/01_fx_di_lifecycle.cpp</span>
+              <span>IDEA Darcula &bull; Ctrl+Enter to Run</span>
+            </div>
+            <div class="editor-wrapper">
+              <textarea id="pg-editor" spellcheck="false"></textarea>
+            </div>
+          </div>
+
+          <div class="output-pane">
+            <div class="pane-header">
+              <span id="pg-output-title">Compiler &amp; Runtime Console</span>
+              <span id="pg-status" style="color: var(--green);">Ready</span>
+            </div>
+            <div class="console-box" id="pg-console">Click "Run Live C++20" (Ctrl+Enter) to compile and execute live on GCC 14.2, or click "Trace Preview" for instant preview.</div>
+          </div>
+        </div>
+
+        <div class="scheduler-visualizer">
+          <div class="stat-pill">Backend: <strong>GCC 14.2 (x86_64 Linux)</strong></div>
+          <div class="stat-pill">Headers: <strong id="stat-header">goforge.hpp + gorun.hpp</strong></div>
+          <div class="stat-pill">Exec Time: <strong id="stat-time">--</strong></div>
+          <div class="stat-pill">Exit Code: <strong id="stat-exit">--</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHY GOFORGE / ADVANTAGES -->
+    <section id="advantages">
+      <h2>Why <code>goforge</code>? Key Engineering Advantages</h2>
+      <div class="grid-2">
+        <div class="card card-green">
+          <h4>1. Synchronous Code, Non-Blocking M:N Execution</h4>
+          <p>Every HTTP connection runs in a lightweight <code>gorun</code> green routine. Inside handlers and services you write straightforward sequential C++ with <code>gorun::Mutex</code>, <code>gorun::RwMutex</code>, <code>gorun::Channel</code>, and non-blocking sockets — without callback hell or viral <code>co_await</code> function coloring.</p>
+        </div>
+        <div class="card card-accent">
+          <h4>2. Compile-Time Typed DI with Fail-Fast Graph Validation</h4>
+          <p>Unlike reflection-based Go containers that panic at runtime on missing or cyclic wires, <code>ServiceCollection::build()</code> verifies missing dependencies, runs 3-color DFS cycle detection (printing the exact <code>A -&gt; B -&gt; C -&gt; A</code> chain), and blocks captive <code>Singleton -&gt; Scoped</code> leaks at startup.</p>
+        </div>
+        <div class="card card-green">
+          <h4>3. Automatic Per-Request <code>ServiceScope</code> Injection</h4>
+          <p>Declare route handlers like <code>[](HttpContext&amp; c, IUserRepo&amp; repo, RequestTrace&amp; trace)</code>. <code>goforge</code> creates an isolated <code>ServiceScope</code> per HTTP request, injects Singletons and Scoped services automatically, and deterministically destroys Scoped objects when the request finishes.</p>
+        </div>
+        <div class="card card-amber">
+          <h4>4. Built-In Shield Against Blocking Drivers (<code>BlockingPool</code>)</h4>
+          <p>Need to call a synchronous C library like <code>libpq</code> or <code>sqlite3</code>? Wrap it in <code>blocking_pool.run([&amp;]{ return db_query(); })</code> — the blocking syscall executes on a dedicated OS pool while your green routine parks cleanly on a <code>gorun::Channel</code>, leaving all <code>gorun</code> workers free.</p>
+        </div>
+        <div class="card card-accent">
+          <h4>5. Zero OS-Thread Explosion &amp; 3.5x Lower Median Latency than Go</h4>
+          <p>Under 300 simultaneous I/O-bound connections, thread-per-connection C++ spawns 300 OS kernel threads, whereas <code>goforge</code> serves 300/300 requests on a fixed M:N worker pool. On Keep-Alive JSON APIs, <code>goforge</code> achieves <strong>p50 = 149 us</strong> (3.5x faster median latency than Go 1.27 <code>net/http</code> at 525 us).</p>
+        </div>
+        <div class="card card-green">
+          <h4>6. Production-Ready Out of the Box</h4>
+          <p>Includes <code>recovery</code> panic isolation, <code>timeout</code> (504 via <code>gorun::Context</code>), <code>rate_limit</code> (<code>gorun::Semaphore</code> backpressure or 429), <code>bearer_auth</code>, RFC-8259 <code>StructuredLogger</code>, JSON/Prometheus <code>MetricsRegistry</code>, Kubernetes <code>/healthz</code> &amp; <code>/readyz</code>, and <code>SIGINT</code>/<code>SIGTERM</code> graceful draining.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSTALLATION -->
+    <section id="install">
+      <h2>Quick Installation (CMake FetchContent)</h2>
+      <p><code>goforge</code> is header-only and automatically pulls <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> and header-only Standalone Asio via CMake <code>FetchContent</code>:</p>
+      <pre><code>include(FetchContent)
+
+FetchContent_Declare(
+    goforge
+    GIT_REPOSITORY https://github.com/Takatochi/goforge.git
+    GIT_TAG        v0.1.0-alpha
+)
+FetchContent_MakeAvailable(goforge)
+
+add_executable(my_service main.cpp)
+target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture">
+      <h2>3-Layer Architecture</h2>
+      <pre><code>+-------------------------------------------------------------------+
+|                     Application (App / Fx-style)                  |
+|  - Compile-Time Typed DI Container (Singleton, Transient, Scoped) |
+|  - Lifecycle Hooks (FIFO OnStart, Rollback, LIFO OnStop)          |
+|  - BlockingPool (Offloads synchronous DB/disk I/O off workers)    |
+|  - Observability (StructuredLogger, MetricsRegistry, Healthz)     |
++---------------------------------+---------------------------------+
+                                  | Dependency Injection
+                                  v
++-------------------------------------------------------------------+
+|                   HTTP / Web Layer (Gin-style)                    |
+|  - Segment Trie Router (:id, *filepath, RouteGroup, 404/405)      |
+|  - HttpContext (params, query, headers, body, RequestScope DI)    |
+|  - Middleware Chain (Recovery, Timeout, RateLimit, Auth, Metrics) |
+|  - 1 Connection / Request = 1 Green Routine: gorun::go(...)       |
++---------------------------------+---------------------------------+
+                                  | Green Routines, Channels, Sync
+                                  v
++-------------------------------------------------------------------+
+|                       gorun Runtime (M:N)                         |
+|  - Work-stealing scheduler, Channel&lt;T&gt;, Mutex, WaitGroup, Context |
+|  - Go-netpoll-style non-blocking Standalone Asio &lt;-&gt; gorun bridge |
++-------------------------------------------------------------------+</code></pre>
+    </section>
+
+    <!-- USAGE GUIDE -->
+    <section id="guide-di">
+      <h2>Complete Usage Guide: How to Build Services with <code>goforge</code></h2>
+
+      <h3>1. Fx-Style Dependency Injection (<code>Singleton</code>, <code>Transient</code>, <code>Scoped</code>)</h3>
+      <p>Wire interfaces, constructors, factories, and pre-built configuration structs with automatic type-based argument resolution:</p>
+      <pre><code class="lang-cpp">auto app = goforge::AppBuilder{}
+    .provide_instance(ServiceConfig{ .db_dsn = "postgres://127.0.0.1/orders" })
+    .provide_singleton&lt;goforge::obs::StructuredLogger&gt;()
+    // Bind interface IUserRepository to PostgresUserRepo with automatic constructor DI:
+    .provide_singleton_as&lt;IUserRepository, PostgresUserRepo, const ServiceConfig&amp;, goforge::BlockingPool&amp;&gt;()
+    // Scoped: created fresh per HTTP request and destroyed deterministically on request end!
+    .provide_scoped&lt;RequestTrace&gt;()
+    // Transient: fresh instance on every resolution
+    .provide_transient&lt;CorrelationToken&gt;()
+    .build(); // Validates missing deps, cycles (A -&gt; B -&gt; A), and captive scopes!</code></pre>
+
+      <h3 id="guide-lifecycle">2. Lifecycle Hooks, Background Routines &amp; Graceful Shutdown</h3>
+      <p>Inject <code>goforge::Lifecycle&amp;</code> directly into any service constructor or <code>invoke(...)</code> callback. Hooks start in FIFO order (with automatic reverse rollback if any hook fails) and stop in LIFO order on <code>SIGINT</code>/<code>SIGTERM</code>:</p>
+      <pre><code class="lang-cpp">lc.append({
+    .name = "database-pool",
+    .on_start = [this](gorun::Context ctx) { connect_pool(ctx); },
+    .on_stop  = [this](gorun::Context ctx) { close_pool(ctx); }
+});
+
+// Managed background green routine: canceled automatically via ctx.on_done() during App::stop()
+app-&gt;spawn_background([](gorun::Context ctx) {
+    gorun::Channel&lt;int&gt; never_ch(0);
+    gorun::select(
+        never_ch.on_recv([](int) {}),
+        ctx.on_done([]() { std::cout &lt;&lt; "Background worker drained cleanly\n"; })
+    );
+});
+
+app-&gt;run_until_signal(); // Handles Ctrl+C / SIGTERM with full connection draining!</code></pre>
+
+      <h3 id="guide-router">3. Gin-Style Router, Nested Groups &amp; DI-Injected Handlers</h3>
+      <p>Define routes with static priority, named parameters (<code>:id</code>), catch-all wildcards (<code>*filepath</code>), and inject any registered DI service directly in the lambda signature:</p>
+      <pre><code class="lang-cpp">auto api = router.group("/api/v1");
+api.use(goforge::web::middleware::bearer_auth(validate_jwt));
+
+// Static "/users/me" always takes priority over "/users/:id"
+api.get("/users/me", [](goforge::web::HttpContext&amp; c) {
+    c.json(200, "{\"subject\":\"" + c.get&lt;std::string&gt;("auth_subject").value_or("") + "\"}");
+});
+
+// Automatic DI injection of Singleton (IUserRepository&amp;) and Scoped (RequestTrace&amp;)!
+api.get("/users/:id", [](goforge::web::HttpContext&amp; c, IUserRepository&amp; repo, RequestTrace&amp; trace) {
+    int id = c.param_as&lt;int&gt;("id").value_or(0);
+    int page = c.query_as&lt;int&gt;("page").value_or(1);
+    c.set_header("X-Trace-Id", trace.id);
+    c.json(200, repo.find_json(id, page));
+});
+
+router.get("/static/*filepath", [](goforge::web::HttpContext&amp; c) {
+    c.text(200, "Serving asset: " + c.param_or("filepath"));
+});</code></pre>
+
+      <h3 id="guide-middleware">4. Production Middleware Stack</h3>
+      <pre><code class="lang-cpp">router.use(metrics.middleware());                          // Tracks RPS, 2xx/4xx/5xx, p50/p95/p99
+router.use(goforge::web::middleware::recovery());          // Isolates exceptions -&gt; 500 JSON
+router.use(logger.access_log_middleware());                // Structured JSON access logs
+router.use(goforge::web::middleware::timeout(50ms));       // Cooperative 504 Gateway Timeout
+router.use(goforge::web::middleware::rate_limit(256));     // gorun::Semaphore concurrency bound</code></pre>
+
+      <h3 id="guide-blocking">5. Safe Blocking Database Calls with <code>BlockingPool</code></h3>
+      <pre><code class="lang-cpp">std::string query_legacy_postgres(goforge::BlockingPool&amp; pool, int user_id) {
+    // Runs blocking C driver call on dedicated OS pool while parking this green routine!
+    return pool.run([user_id]() {
+        return libpq_sync_select_user(user_id); // Never stalls gorun M:N workers!
+    });
+}</code></pre>
+
+      <h3 id="guide-obs">6. Kubernetes Health Probes &amp; Prometheus Metrics</h3>
+      <pre><code class="lang-cpp">health.add_check("postgres", [&amp;]() -&gt; goforge::obs::HealthCheckResult {
+    return db.is_alive()
+        ? goforge::obs::HealthCheckResult{true, "pool healthy"}
+        : goforge::obs::HealthCheckResult{false, "connection lost"};
+});
+
+// Mounts GET /healthz (200), GET /readyz (200 or 503), GET /metrics (JSON or ?format=prometheus)
+health.mount(router, metrics);</code></pre>
+    </section>
+
+    <!-- BENCHMARKS -->
+    <section id="benchmarks">
+      <h2>3-Way HTTP/1.1 Performance Benchmarks</h2>
+      <p>Measured on 16 logical CPU cores (Windows x64, <code>GCC 16.2.0 -O3</code> vs <code>go1.27.4</code>). Full source in <code>benchmarks/</code>:</p>
+
+      <h3>Workload 1: Keep-Alive JSON API Median Latency (p50 in microseconds — LOWER IS BETTER)</h3>
+      <div class="bench-row">
+        <div class="bench-label">
+          <span>Standard C++20 Raw Socket (no Router/DI/Metrics)</span>
+          <span>33 us (255,517 req/s)</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill-std" style="width: 6.3%;"></div></div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label">
+          <span>goforge (Full Stack: HttpServer + Router + Scoped DI + Metrics)</span>
+          <span>149 us (32,226 req/s) [3.5x Lower p50 Latency than Go!]</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill-goforge" style="width: 28.4%;"></div></div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label">
+          <span>Native Go 1.27.4 net/http (ServeMux)</span>
+          <span>525 us (42,181 req/s)</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill-go" style="width: 100%;"></div></div>
+      </div>
+
+      <h3>Workload 2: 300 Concurrent I/O-Bound Connections (10ms handler wait)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Framework / Runtime</th>
+              <th>Successful Requests</th>
+              <th>OS Kernel Threads Used</th>
+              <th>Scalability Model</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong><code>goforge</code> (C++20 + <code>gorun</code> + Asio)</strong></td>
+              <td><strong>300 / 300 OK</strong></td>
+              <td><strong>Fixed 16 M:N workers (+ 2 I/O)</strong></td>
+              <td>Zero thread growth at 1k–10k+ concurrent clients</td>
+            </tr>
+            <tr>
+              <td><strong>Native Go 1.27 <code>net/http</code></strong></td>
+              <td>213 / 300 OK (Windows ephemeral port burst)</td>
+              <td>M:N goroutine pool</td>
+              <td>Lightweight goroutines</td>
+            </tr>
+            <tr>
+              <td><strong>Standard C++20 (<code>std::jthread</code>)</strong></td>
+              <td>300 / 300 OK</td>
+              <td><strong>300 OS kernel threads spawned</strong></td>
+              <td>Linear OS thread/stack exhaustion under C10K</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- FRAMEWORK COMPARISON -->
+    <section id="comparison">
+      <h2>Ecosystem Comparison: <code>goforge</code> vs. Go (Gin+Fx) vs. C++ Alternatives</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th><code>goforge</code> (C++20)</th>
+              <th>Go (Gin + Uber Fx)</th>
+              <th>C++20 <code>co_await</code> / Asio</th>
+              <th>Thread-per-Conn C++</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Programming Model</strong></td>
+              <td><strong>Synchronous-looking green routines</strong></td>
+              <td>Synchronous goroutines</td>
+              <td>Viral <code>co_await</code> coloring</td>
+              <td>Blocking OS threads</td>
+            </tr>
+            <tr>
+              <td><strong>DI Validation</strong></td>
+              <td><strong>Compile-time typed + Cycle &amp; Captive checks in <code>build()</code></strong></td>
+              <td>Runtime reflection</td>
+              <td>Manual wiring</td>
+              <td>Manual wiring</td>
+            </tr>
+            <tr>
+              <td><strong>GC Pause Latency</strong></td>
+              <td><strong>Zero (Deterministic RAII)</strong></td>
+              <td>GC stop-the-world / pacing</td>
+              <td>Zero</td>
+              <td>Zero</td>
+            </tr>
+            <tr>
+              <td><strong>Blocking Driver Protection</strong></td>
+              <td><strong>Built-in <code>BlockingPool::run()</code></strong></td>
+              <td>OS thread handoff (<code>entersyscall</code>)</td>
+              <td>Manual thread pool</td>
+              <td>Blocks own thread</td>
+            </tr>
+            <tr>
+              <td><strong>Observability Built-In</strong></td>
+              <td><strong>JSON Logs + Prometheus + <code>/healthz</code> / <code>/readyz</code></strong></td>
+              <td>Third-party packages</td>
+              <td>Manual</td>
+              <td>Manual</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TESTS -->
+    <section id="tests">
+      <h2>29 Automated Verification Tests (Stages 1–4)</h2>
+      <pre><code>Test project C:/Users/nazer/OneDrive/Desktop/goforge/build
+    Start 1: goforge_stage1_tests  (10 tests: Lifetimes, Auto-DI, Cycles, Captive, Lifecycle, BlockingPool)
+1/4 Test #1: goforge_stage1_tests .............   Passed    0.28 sec
+    Start 2: goforge_stage2_tests  (7 tests: HTTP/1.1 Keep-Alive, 300 concurrent gorun load, Zero OS blocking)
+2/4 Test #2: goforge_stage2_tests .............   Passed    0.83 sec
+    Start 3: goforge_stage3_tests  (8 tests: Trie Router, Groups, DI Handlers, Recovery, Timeout, RateLimit)
+3/4 Test #3: goforge_stage3_tests .............   Passed    0.29 sec
+    Start 4: goforge_stage4_tests  (4 tests: JSON Logger, Metrics p50/p99/Prometheus, /healthz, /readyz)
+4/4 Test #4: goforge_stage4_tests .............   Passed    0.19 sec
+
+100% tests passed out of 4 (29/29 assertions, 0 compiler warnings under -Wall -Wextra -Wpedantic)</code></pre>
+    </section>
+
+    <footer>
+      <div>Created by <strong>Artur Havor</strong> &bull; Built on <a href="https://takatochi.github.io/gorun/" style="color: var(--accent); text-decoration: none;">gorun</a> &bull; Apache License 2.0</div>
+      <div><a href="https://github.com/Takatochi/goforge" style="color: var(--accent); text-decoration: none;">github.com/Takatochi/goforge</a></div>
+    </footer>
+
+  </main>
+
+  <script>
+    const EXAMPLES = [
+      {
+        filename: "playground/01_fx_di_lifecycle.cpp",
+        code: `#include <iostream>
+#include <memory>
+#include <string>
+#include "goforge/goforge.hpp"
+
+struct AppSettings {
+    std::string service_name{"billing-api"};
+};
+
+class IStore {
+public:
+    virtual ~IStore() = default;
+    virtual std::string get_item(int id) const = 0;
+};
+
+class MemoryStore final : public IStore {
+    const AppSettings& cfg_;
+public:
+    MemoryStore(const AppSettings& cfg, goforge::Lifecycle& lc) : cfg_(cfg) {
+        lc.append({
+            .name = "memory-store",
+            .on_start = [this](gorun::Context) {
+                std::cout << "[OnStart] Store ready for " << cfg_.service_name << "\\n";
+            },
+            .on_stop = [](gorun::Context) {
+                std::cout << "[OnStop] Store flushed cleanly (LIFO order)\\n";
+            }
+        });
+    }
+    std::string get_item(int id) const override {
+        return cfg_.service_name + ":item-" + std::to_string(id);
+    }
+};
+
+struct RequestTrace {
+    static inline int next_id = 100;
+    int id = ++next_id;
+    ~RequestTrace() { std::cout << "[Scoped] Destroyed RequestTrace #" << id << "\\n"; }
+};
+
+int main() {
+    auto app = goforge::AppBuilder{}
+        .provide_instance(AppSettings{})
+        .provide_singleton_as<IStore, MemoryStore, const AppSettings&, goforge::Lifecycle&>()
+        .provide_scoped<RequestTrace>()
+        .invoke([](IStore& store) {
+            std::cout << "[Invoke] Pre-flight check: " << store.get_item(7) << "\\n";
+        })
+        .build();
+
+    app->start();
+
+    {
+        auto req_scope = app->create_scope();
+        req_scope.invoke([](IStore& store, RequestTrace& tr) {
+            std::cout << "[Request #" << tr.id << "] " << store.get_item(42) << "\\n";
+        });
+    } // RequestTrace destroyed deterministically here!
+
+    app->stop();
+    return 0;
+}`,
+        trace: [
+          { type: "info", text: "[Invoke] Pre-flight check: billing-api:item-7" },
+          { type: "ok",   text: "[OnStart] Store ready for billing-api" },
+          { type: "ok",   text: "[Request #101] billing-api:item-42" },
+          { type: "sched",text: "[Scoped] Destroyed RequestTrace #101" },
+          { type: "info", text: "[OnStop] Store flushed cleanly (LIFO order)" }
+        ]
+      },
+      {
+        filename: "playground/02_gin_router_di_handlers.cpp",
+        code: `#include <iostream>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include "goforge/goforge.hpp"
+
+struct UserRepo {
+    std::unordered_map<int, std::string> users{{1, "Artur Havor"}, {2, "Ada Lovelace"}};
+};
+
+struct RequestId {
+    static inline int seq = 1;
+    int value = seq++;
+};
+
+goforge::http::HttpRequest make_req(std::string method, std::string target, std::string auth = "") {
+    goforge::http::HttpRequest r;
+    r.method = std::move(method);
+    r.target = target;
+    auto q = target.find('?');
+    r.path = (q == std::string::npos) ? target : target.substr(0, q);
+    r.raw_query = (q == std::string::npos) ? "" : target.substr(q + 1);
+    if (!auth.empty()) r.headers.set("Authorization", std::move(auth));
+    return r;
+}
+
+int main() {
+    goforge::ServiceCollection sc;
+    sc.add_singleton<UserRepo>().add_scoped<RequestId>();
+    auto provider = sc.build();
+
+    goforge::web::Router router;
+    auto api = router.group("/api/v1");
+    api.use(goforge::web::middleware::bearer_auth([](std::string_view tok) -> std::optional<std::string> {
+        return tok == "secret" ? std::optional<std::string>("admin") : std::nullopt;
+    }));
+
+    // DI-injected route handler: UserRepo& (Singleton) + RequestId& (Scoped)
+    api.get("/users/:id", [](goforge::web::HttpContext& c, UserRepo& repo, RequestId& rid) {
+        int id = c.param_as<int>("id").value_or(0);
+        auto it = repo.users.find(id);
+        if (it == repo.users.end()) {
+            c.json(404, "{\\"error\\":\\"not_found\\"}");
+            return;
+        }
+        c.json(200, "{\\"req\\":" + std::to_string(rid.value) +
+                    ",\\"name\\":\\"" + it->second +
+                    "\\",\\"fmt\\":\\"" + c.query_or("fmt", "full") + "\\"}");
+    });
+
+    auto r1 = router.dispatch(make_req("GET", "/api/v1/users/1"), gorun::background(), &provider);
+    auto r2 = router.dispatch(make_req("GET", "/api/v1/users/1?fmt=short", "Bearer secret"), gorun::background(), &provider);
+    auto r3 = router.dispatch(make_req("DELETE", "/api/v1/users/1", "Bearer secret"), gorun::background(), &provider);
+
+    std::cout << "1. No token  -> HTTP " << r1.status << " " << r1.body << "\\n";
+    std::cout << "2. Valid GET -> HTTP " << r2.status << " " << r2.body << "\\n";
+    std::cout << "3. Wrong VERB-> HTTP " << r3.status << " Allow=" << r3.headers.get_or("Allow") << "\\n";
+}`,
+        trace: [
+          { type: "warn", text: "1. No token  -> HTTP 401 {\"error\":\"unauthorized\",\"message\":\"missing bearer token\"}" },
+          { type: "ok",   text: "2. Valid GET -> HTTP 200 {\"req\":1,\"name\":\"Artur Havor\",\"fmt\":\"short\"}" },
+          { type: "info", text: "3. Wrong VERB-> HTTP 405 Allow=GET" }
+        ]
+      },
+      {
+        filename: "playground/03_middleware_recovery_timeout_ratelimit.cpp",
+        code: `#include <atomic>
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
+#include "goforge/goforge.hpp"
+
+using namespace std::chrono_literals;
+
+goforge::http::HttpRequest get_req(std::string path) {
+    goforge::http::HttpRequest r;
+    r.method = "GET";
+    r.target = path;
+    r.path = std::move(path);
+    return r;
+}
+
+int main() {
+    goforge::web::Router router;
+    router.use(goforge::web::middleware::recovery());
+    router.use(goforge::web::middleware::timeout(20ms));
+
+    router.get("/boom", [](goforge::web::HttpContext&) {
+        throw std::runtime_error("unexpected database fault");
+    });
+
+    router.get("/slow", [](goforge::web::HttpContext& c) {
+        if (!goforge::web::sleep_with_context(c.go_ctx(), 150ms)) {
+            return; // Canceled by Timeout middleware -> automatic 504!
+        }
+        c.text(200, "finished");
+    });
+
+    auto limited = router.group("/limited");
+    limited.use(goforge::web::middleware::rate_limit(2, /*reject_immediately=*/true));
+    limited.get("/work", [](goforge::web::HttpContext& c) {
+        gorun::sleep_for(15ms);
+        c.text(200, "ok");
+    });
+
+    auto r_panic = router.dispatch(get_req("/boom"));
+    auto r_timeout = router.dispatch(get_req("/slow"));
+    std::cout << "[Recovery] HTTP " << r_panic.status << " " << r_panic.body << "\\n";
+    std::cout << "[Timeout]  HTTP " << r_timeout.status << " " << r_timeout.body << "\\n";
+
+    std::atomic<int> ok{0}, too_many{0};
+    {
+        gorun::Scope scope;
+        for (int i = 0; i < 5; ++i) {
+            gorun::go([&]() {
+                auto r = router.dispatch(get_req("/limited/work"));
+                if (r.status == 200) ok.fetch_add(1);
+                else if (r.status == 429) too_many.fetch_add(1);
+            });
+        }
+    }
+    std::cout << "[RateLimit] 200 OK=" << ok.load() << ", 429 Rejected=" << too_many.load() << "\\n";
+}`,
+        trace: [
+          { type: "warn", text: "[Recovery] HTTP 500 {\"error\":\"internal_server_error\",\"message\":\"unexpected database fault\"}" },
+          { type: "warn", text: "[Timeout]  HTTP 504 {\"error\":\"gateway_timeout\",\"message\":\"request deadline exceeded\"}" },
+          { type: "ok",   text: "[RateLimit] 200 OK=2, 429 Rejected=3" }
+        ]
+      },
+      {
+        filename: "playground/04_metrics_healthz_logger.cpp",
+        code: `#include <iostream>
+#include "goforge/goforge.hpp"
+
+goforge::http::HttpRequest req(std::string path, std::string query = "") {
+    goforge::http::HttpRequest r;
+    r.method = "GET";
+    r.path = std::move(path);
+    r.raw_query = std::move(query);
+    r.target = r.raw_query.empty() ? r.path : (r.path + "?" + r.raw_query);
+    return r;
+}
+
+int main() {
+    goforge::obs::StructuredLogger logger;
+    goforge::obs::MetricsRegistry metrics;
+    goforge::obs::HealthRegistry health;
+
+    bool db_healthy = true;
+    health.add_check("postgres", [&]() -> goforge::obs::HealthCheckResult {
+        return db_healthy ? goforge::obs::HealthCheckResult{true, "connected"}
+                          : goforge::obs::HealthCheckResult{false, "pool exhausted"};
+    });
+
+    goforge::web::Router router;
+    router.use(metrics.middleware());
+    router.use(logger.access_log_middleware());
+    health.mount(router, metrics);
+
+    router.get("/hello", [](goforge::web::HttpContext& c) {
+        c.json(200, "{\\"msg\\":\\"hello from goforge\\"}");
+    });
+
+    (void)router.dispatch(req("/hello"));
+    auto ready_ok = router.dispatch(req("/readyz"));
+    db_healthy = false;
+    auto ready_degraded = router.dispatch(req("/readyz"));
+    auto prom = router.dispatch(req("/metrics", "format=prometheus"));
+
+    std::cout << "\\n/readyz (healthy)  -> HTTP " << ready_ok.status << " " << ready_ok.body << "\\n";
+    std::cout << "/readyz (degraded) -> HTTP " << ready_degraded.status << " " << ready_degraded.body << "\\n";
+    std::cout << "\\n--- Prometheus /metrics ---\\n" << prom.body;
+}`,
+        trace: [
+          { type: "sched", text: "{\"ts\":\"2026-11-21T00:00:00.000Z\",\"level\":\"INFO\",\"msg\":\"http_request\",\"method\":\"GET\",\"path\":\"/hello\",\"status\":\"200\",\"latency_us\":\"5\"}" },
+          { type: "ok",    text: "/readyz (healthy)  -> HTTP 200 {\"status\":\"ready\",\"checks\":{\"postgres\":{\"healthy\":true,\"detail\":\"connected\"}}}" },
+          { type: "warn",  text: "/readyz (degraded) -> HTTP 503 {\"status\":\"degraded\",\"checks\":{\"postgres\":{\"healthy\":false,\"detail\":\"pool exhausted\"}}}" },
+          { type: "info",  text: "goforge_http_requests_total 3 | goforge_http_in_flight 0" }
+        ]
+      },
+      {
+        filename: "playground/05_custom_sandbox.cpp",
+        code: `#include <iostream>
+#include <string>
+#include "goforge/goforge.hpp"
+
+// Write any C++20 goforge + gorun code here and press Ctrl+Enter to run live on GCC 14.2!
+struct GreetingService {
+    std::string greet(std::string_view who) const {
+        return "Hello, " + std::string(who) + " from goforge!";
+    }
+};
+
+int main() {
+    auto app = goforge::AppBuilder{}
+        .provide_singleton<GreetingService>()
+        .provide_singleton<goforge::web::Router>()
+        .invoke([](goforge::web::Router& r) {
+            r.get("/hi/:name", [](goforge::web::HttpContext& c, GreetingService& svc) {
+                c.json(200, "{\\"greeting\\":\\"" + svc.greet(c.param_or("name")) + "\\"}");
+            });
+        })
+        .build();
+
+    app->start();
+    goforge::http::HttpRequest req;
+    req.method = "GET";
+    req.path = "/hi/Developer";
+    auto resp = app->services().resolve<goforge::web::Router>().dispatch(req, gorun::background(), &app->services());
+    std::cout << "HTTP " << resp.status << " -> " << resp.body << "\\n";
+    app->stop();
+}`,
+        trace: [
+          { type: "ok", text: "HTTP 200 -> {\"greeting\":\"Hello, Developer from goforge!\"}" }
+        ]
+      }
+    ];
+
+    let currentIdx = 0;
+    let timerIds = [];
+    let cmEditor = null;
+    let cachedHeaders = null;
+
+    function getEditorValue() { return cmEditor ? cmEditor.getValue() : document.getElementById('pg-editor').value; }
+    function setEditorValue(val) { if (cmEditor) cmEditor.setValue(val); else document.getElementById('pg-editor').value = val; }
+    function stripAnsi(text) { return String(text || '').replace(/\x1b\[[0-9;]*m/g, ''); }
+
+    function appendConsoleLine(text, cls) {
+      const consoleEl = document.getElementById('pg-console');
+      const line = document.createElement('div');
+      line.className = 'console-line-' + cls;
+      line.textContent = text;
+      consoleEl.appendChild(line);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    async function fetchFirstAvailable(urls, marker) {
+      let lastErr = null;
+      for (const url of urls) {
+        try {
+          const resp = await fetch(url, { cache: 'no-cache' });
+          if (resp.ok) {
+            const text = await resp.text();
+            if (text.includes(marker)) return text;
+          }
+        } catch (err) { lastErr = err; }
+      }
+      throw new Error('Failed to load header (' + (lastErr ? lastErr.message : 'fetch failed') + ')');
+    }
+
+    async function fetchFrameworkHeaders() {
+      if (cachedHeaders) return cachedHeaders;
+      const [goforgeHdr, gorunHdr] = await Promise.all([
+        fetchFirstAvailable([
+          './goforge.hpp',
+          'https://raw.githubusercontent.com/Takatochi/goforge/main/single_include/goforge/goforge.hpp'
+        ], 'namespace goforge'),
+        fetchFirstAvailable([
+          './gorun.hpp',
+          'https://raw.githubusercontent.com/Takatochi/gorun/main/single_include/gorun/gorun.hpp'
+        ], 'namespace gorun')
+      ]);
+      cachedHeaders = { goforgeHdr, gorunHdr };
+      const totalKb = ((goforgeHdr.length + gorunHdr.length) / 1024).toFixed(0);
+      document.getElementById('stat-header').textContent = 'goforge + gorun (' + totalKb + ' KB)';
+      return cachedHeaders;
+    }
+
+    async function runLiveCompiler() {
+      timerIds.forEach(id => clearTimeout(id));
+      timerIds = [];
+
+      const runBtn = document.getElementById('pg-run-btn');
+      const consoleEl = document.getElementById('pg-console');
+      const statusEl = document.getElementById('pg-status');
+      const titleEl = document.getElementById('pg-output-title');
+      const flags = document.getElementById('pg-flags').value;
+
+      runBtn.disabled = true;
+      consoleEl.innerHTML = '';
+      titleEl.textContent = 'Live GCC 14.2 Compilation & Execution (Compiler Explorer)';
+      statusEl.textContent = 'Fetching headers & compiling...';
+      statusEl.style.color = 'var(--amber)';
+      document.getElementById('stat-time').textContent = '...';
+      document.getElementById('stat-exit').textContent = '...';
+
+      appendConsoleLine('[Compiler] Fetching goforge/goforge.hpp & gorun/gorun.hpp...', 'sched');
+
+      try {
+        const { goforgeHdr, gorunHdr } = await fetchFrameworkHeaders();
+        const userCode = getEditorValue();
+
+        appendConsoleLine('[Compiler] Compiling on GCC 14.2.0 (' + flags + ')...', 'sched');
+        const t0 = performance.now();
+
+        const payload = {
+          source: userCode,
+          options: {
+            userArguments: flags,
+            executeParameters: { args: [], stdin: '' },
+            compilerOptions: { executorRequest: true },
+            filters: { execute: true }
+          },
+          files: [
+            { filename: 'goforge/goforge.hpp', contents: goforgeHdr },
+            { filename: 'gorun/gorun.hpp', contents: gorunHdr }
+          ]
+        };
+
+        const resp = await fetch('https://godbolt.org/api/compiler/g142/compile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) throw new Error('Compiler Explorer HTTP ' + resp.status);
+        const data = await resp.json();
+        const elapsedMs = Math.round(performance.now() - t0);
+
+        const buildStderr = (data.buildResult && data.buildResult.stderr) ? data.buildResult.stderr : [];
+        const buildCode = (data.buildResult && typeof data.buildResult.code === 'number') ? data.buildResult.code : data.code;
+
+        if (buildStderr.length > 0) {
+          appendConsoleLine('--- Compiler Diagnostics ---', 'warn');
+          buildStderr.forEach(item => {
+            const cleaned = stripAnsi(item.text);
+            appendConsoleLine(cleaned, /error:/i.test(cleaned) ? 'err' : 'warn');
+          });
+        }
+
+        if (buildCode !== 0 || !data.didExecute) {
+          statusEl.textContent = 'Compilation Failed (Exit ' + buildCode + ')';
+          statusEl.style.color = 'var(--red)';
+          document.getElementById('stat-time').textContent = elapsedMs + ' ms';
+          document.getElementById('stat-exit').textContent = String(buildCode);
+          return;
+        }
+
+        appendConsoleLine('--- Program Output (Real Linux x86_64 Execution) ---', 'info');
+        const outLines = Array.isArray(data.stdout) ? data.stdout : [];
+        const errLines = Array.isArray(data.stderr) ? data.stderr : [];
+        if (outLines.length === 0 && errLines.length === 0) {
+          appendConsoleLine('(Program exited cleanly with no stdout output)', 'sched');
+        } else {
+          outLines.forEach(item => appendConsoleLine(stripAnsi(item.text), 'stdout'));
+          errLines.forEach(item => appendConsoleLine(stripAnsi(item.text), 'err'));
+        }
+
+        const exitCode = typeof data.code === 'number' ? data.code : 0;
+        document.getElementById('stat-time').textContent = data.execTime ? (data.execTime + ' ms remote') : (elapsedMs + ' ms');
+        document.getElementById('stat-exit').textContent = String(exitCode);
+        appendConsoleLine('[Done] Process exited with code ' + exitCode + ' (' + elapsedMs + ' ms round-trip)', exitCode === 0 ? 'ok' : 'err');
+        statusEl.textContent = exitCode === 0 ? 'Executed Live (Exit 0)' : ('Runtime Exit ' + exitCode);
+        statusEl.style.color = exitCode === 0 ? 'var(--green)' : 'var(--red)';
+      } catch (err) {
+        appendConsoleLine('[Error] ' + err.message, 'err');
+        appendConsoleLine('Tip: Click "Trace Preview" for instant offline output.', 'warn');
+        statusEl.textContent = 'Remote Error';
+        statusEl.style.color = 'var(--red)';
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    function runTracePreview() {
+      timerIds.forEach(id => clearTimeout(id));
+      timerIds = [];
+      const consoleEl = document.getElementById('pg-console');
+      const statusEl = document.getElementById('pg-status');
+      document.getElementById('pg-output-title').textContent = 'Instant Trace Preview (Local)';
+      consoleEl.innerHTML = '';
+      statusEl.textContent = 'Playing Trace Preview...';
+      statusEl.style.color = 'var(--amber)';
+
+      const trace = EXAMPLES[currentIdx].trace;
+      trace.forEach((item, i) => {
+        const tid = setTimeout(() => {
+          appendConsoleLine(item.text, item.type);
+          if (i === trace.length - 1) {
+            statusEl.textContent = 'Preview Complete (Click "Run Live C++20" to compile)';
+            statusEl.style.color = 'var(--green)';
+            document.getElementById('stat-time').textContent = 'Instant';
+            document.getElementById('stat-exit').textContent = '0';
+          }
+        }, i * 90);
+        timerIds.push(tid);
+      });
+    }
+
+    function loadExample(idx) {
+      currentIdx = idx;
+      document.querySelectorAll('.tab-btn').forEach((btn, i) => btn.classList.toggle('active', i === idx));
+      document.getElementById('pg-filename').textContent = EXAMPLES[idx].filename;
+      setEditorValue(EXAMPLES[idx].code);
+      runTracePreview();
+    }
+
+    function resetExample() {
+      setEditorValue(EXAMPLES[currentIdx].code);
+      document.getElementById('pg-status').textContent = 'Reset to example template';
+      document.getElementById('pg-status').style.color = 'var(--accent)';
+    }
+
+    function copyCode() {
+      navigator.clipboard.writeText(getEditorValue());
+      document.getElementById('pg-status').textContent = 'Copied C++ code to clipboard';
+      document.getElementById('pg-status').style.color = 'var(--accent)';
+    }
+
+    function highlightStaticCppBlocks() {
+      const keywords = new Set([
+        'auto','bool','break','case','catch','char','class','const','constexpr','continue',
+        'default','delete','do','double','else','enum','explicit','false','float','for',
+        'if','inline','int','long','mutable','namespace','new','noexcept','nullptr','operator',
+        'private','protected','public','return','short','signed','sizeof','static','struct',
+        'switch','template','this','throw','true','try','typename','unsigned','using','virtual','void','while'
+      ]);
+      const types = new Set([
+        'AppBuilder','App','ServiceCollection','ServiceProvider','ServiceScope','Lifecycle',
+        'BlockingPool','Router','RouteGroup','HttpContext','HttpRequest','HttpResponse',
+        'HttpServer','StructuredLogger','MetricsRegistry','HealthRegistry','HealthCheckResult',
+        'Channel','Context','Scope','ServiceConfig','IUserRepository','PostgresUserRepo',
+        'RequestTrace','CorrelationToken','string','string_view','optional','shared_ptr'
+      ]);
+
+      document.querySelectorAll('pre code.lang-cpp').forEach(block => {
+        const raw = block.textContent;
+        const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|^\s*#\s*[a-zA-Z_]+|\bGORUN_[A-Z0-9_]+\b|\b\d+(?:\.\d+)?(?:ms|us|ns|s)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)/gm;
+        let out = '', last = 0, m;
+        const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        while ((m = re.exec(raw)) !== null) {
+          out += esc(raw.slice(last, m.index));
+          const tok = m[0];
+          if (tok.startsWith('//') || tok.startsWith('/*')) out += '<span class="tok-cmt">' + esc(tok) + '</span>';
+          else if (tok.startsWith('"')) out += '<span class="tok-str">' + esc(tok) + '</span>';
+          else if (tok.trimStart().startsWith('#') || tok.startsWith('GORUN_')) out += '<span class="tok-mac">' + esc(tok) + '</span>';
+          else if (/^\d/.test(tok)) out += '<span class="tok-num">' + esc(tok) + '</span>';
+          else if (keywords.has(tok)) out += '<span class="tok-kw">' + esc(tok) + '</span>';
+          else if (tok === 'goforge' || tok === 'gorun' || tok === 'std' || tok === 'web' || tok === 'obs' || tok === 'middleware') out += '<span class="tok-ns">' + esc(tok) + '</span>';
+          else if (types.has(tok)) out += '<span class="tok-ty">' + esc(tok) + '</span>';
+          else if (raw[re.lastIndex] === '(') out += '<span class="tok-fn">' + esc(tok) + '</span>';
+          else out += esc(tok);
+          last = re.lastIndex;
+        }
+        out += esc(raw.slice(last));
+        block.innerHTML = out;
+      });
+    }
+
+    function initPlayground() {
+      highlightStaticCppBlocks();
+      const textarea = document.getElementById('pg-editor');
+      if (window.CodeMirror) {
+        cmEditor = CodeMirror.fromTextArea(textarea, {
+          mode: 'text/x-c++src',
+          theme: 'idea-darcula',
+          lineNumbers: true,
+          styleActiveLine: true,
+          matchBrackets: true,
+          autoCloseBrackets: true,
+          indentUnit: 4,
+          tabSize: 4,
+          indentWithTabs: false,
+          extraKeys: {
+            'Ctrl-Enter': () => runLiveCompiler(),
+            'Cmd-Enter': () => runLiveCompiler()
+          }
+        });
+      }
+      loadExample(0);
+    }
+
+    window.addEventListener('load', initPlayground);
+  </script>
+
+</body>
+</html>

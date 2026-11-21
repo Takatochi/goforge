@@ -1,0 +1,34 @@
+name: Deploy Documentation Website to GitHub Pages
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy-pages:
+    name: Publish docs/ to gh-pages branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Stage single-header goforge.hpp, gorun.hpp, and .nojekyll for Pages
+        run: |
+          cp single_include/goforge/goforge.hpp docs/goforge.hpp
+          curl -fsSL https://raw.githubusercontent.com/Takatochi/gorun/main/single_include/gorun/gorun.hpp -o docs/gorun.hpp
+          touch docs/.nojekyll
+
+      - name: Deploy docs/ to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          force_orphan: true
