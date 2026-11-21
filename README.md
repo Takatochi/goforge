@@ -78,7 +78,7 @@ include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        main
+    GIT_TAG        v0.8.0 # or main
 )
 FetchContent_MakeAvailable(goforge)
 

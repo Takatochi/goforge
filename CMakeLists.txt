@@ -41,7 +41,7 @@ if(NOT TARGET gorun::gorun)
         FetchContent_Declare(
             gorun
             GIT_REPOSITORY https://github.com/Takatochi/gorun.git
-            GIT_TAG        main
+            GIT_TAG        v0.4.0
         )
         FetchContent_MakeAvailable(gorun)
     endif()
