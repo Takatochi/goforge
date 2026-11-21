@@ -5,6 +5,10 @@ out/
 dist/
 install_prefix/
 
+# Generated docs staging copies (copied automatically by pages.yml)
+docs/goforge.hpp
+docs/gorun.hpp
+
 # Compiled binaries and objects
 *.exe
 *.obj
