@@ -1,0 +1,31 @@
+{
+  "name": "goforge",
+  "version": "0.4.0",
+  "description": "Header-only C++20/23 web, Dependency Injection, fluent Query AST, and EF-style ORM framework built 100% natively on gorun.",
+  "homepage": "https://github.com/Takatochi/goforge",
+  "license": "Apache-2.0",
+  "supports": "(x64 | arm64) & (linux | osx | windows)",
+  "dependencies": [
+    "gorun",
+    "nlohmann-json",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "sqlite"
+  ],
+  "features": {
+    "sqlite": {
+      "description": "Enable SQLite 3 backend driver for goforge::data EF-style ORM",
+      "dependencies": [
+        "sqlite3"
+      ]
+    }
+  }
+}

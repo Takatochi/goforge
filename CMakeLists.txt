@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.8.0 LANGUAGES C CXX)
+project(goforge VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(GOFORGE_IS_TOP_LEVEL ON)
@@ -17,11 +19,15 @@ option(GOFORGE_BUILD_TESTS "Build goforge unit and integration tests" ${GOFORGE_
 option(GOFORGE_BUILD_EXAMPLES "Build goforge example applications" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_BUILD_BENCHMARKS "Build goforge HTTP performance benchmarks" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_ENABLE_SQLITE "Enable embedded SQLite 3 driver for goforge::data ORM" ON)
+option(GOFORGE_INSTALL "Generate install target and CMake package config for goforge (for vcpkg/Conan/system install)" OFF)
 set(GOFORGE_LOCAL_GORUN_DIR "" CACHE PATH "Optional local path to gorun repository (auto-detects ../Rutine if present)")
 
 # ----------------------------------------------------------------------------
 # Dependency 1: gorun (M:N Green Threads, Channels, Native IOCP/epoll/kqueue NetPoller)
 # ----------------------------------------------------------------------------
+if(NOT TARGET gorun::gorun)
+    find_package(gorun CONFIG QUIET)
+endif()
 if(NOT TARGET gorun::gorun)
     set(GORUN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GORUN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -37,7 +43,7 @@ if(NOT TARGET gorun::gorun)
         message(STATUS "[goforge] Using local gorun runtime at: ${_local_gorun}")
         add_subdirectory("${_local_gorun}" "${CMAKE_CURRENT_BINARY_DIR}/_deps/gorun-build" EXCLUDE_FROM_ALL)
     else()
-        message(STATUS "[goforge] Fetching gorun (v0.4.0+) via FetchContent...")
+        message(STATUS "[goforge] Fetching gorun (v0.4.0) via FetchContent...")
         FetchContent_Declare(
             gorun
             GIT_REPOSITORY https://github.com/Takatochi/gorun.git
@@ -50,6 +56,9 @@ endif()
 # ----------------------------------------------------------------------------
 # Dependency 2: nlohmann/json (Header-only JSON Serialization & DTO Binding)
 # ----------------------------------------------------------------------------
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    find_package(nlohmann_json CONFIG QUIET)
+endif()
 if(NOT TARGET nlohmann_json::nlohmann_json)
     set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
     set(JSON_Install OFF CACHE BOOL "" FORCE)
@@ -173,4 +182,47 @@ if(GOFORGE_BUILD_BENCHMARKS)
 
     add_executable(bench_std_http benchmarks/bench_std_http.cpp)
     target_link_libraries(bench_std_http PRIVATE goforge::goforge)
+endif()
+
+# ----------------------------------------------------------------------------
+# CMake Package Installation & Export (supports vcpkg, Conan 2.0, find_package)
+# ----------------------------------------------------------------------------
+if(GOFORGE_INSTALL)
+    install(TARGETS goforge
+        EXPORT goforgeTargets
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
+    install(DIRECTORY include/goforge
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
+    install(FILES LICENSE README.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    )
+
+    install(EXPORT goforgeTargets
+        FILE goforgeTargets.cmake
+        NAMESPACE goforge::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/goforge
+    )
+
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/goforgeConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/goforgeConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/goforge
+    )
+
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/goforgeConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+        ARCH_INDEPENDENT
+    )
+
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/goforgeConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/goforgeConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/goforge
+    )
 endif()
