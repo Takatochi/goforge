@@ -384,9 +384,9 @@
 
     <div class="nav-section">Performance &amp; Quality</div>
     <ul class="nav-list">
-      <li><a href="#benchmarks">3-Way HTTP Benchmarks</a></li>
+      <li><a href="#benchmarks">4-Way HTTP Benchmarks</a></li>
       <li><a href="#comparison">Framework Comparison</a></li>
-      <li><a href="#tests">35 Verification Tests</a></li>
+      <li><a href="#tests">45 Verification Tests</a></li>
     </ul>
   </aside>
 
@@ -396,10 +396,10 @@
     <div class="hero">
       <div class="hero-left">
         <div class="badges">
-          <span class="badge">Version: v0.2.0-alpha</span>
+          <span class="badge">Version: v0.8.0</span>
           <span class="badge">C++20 / C++23</span>
-          <span class="badge">Header-Only (Fx + Gin + Typed JSON DTOs)</span>
-          <span class="badge">gorun + Asio + nlohmann/json</span>
+          <span class="badge">Header-Only (Fx + Gin + Query + EF ORM)</span>
+          <span class="badge">100% Native gorun::net (Zero Asio)</span>
           <span class="badge">Apache-2.0</span>
         </div>
         <h1>goforge — Uber Fx + Gin Ergonomics for High-Concurrency C++20</h1>
@@ -503,8 +503,8 @@
           <p>Need to call a synchronous C library like <code>libpq</code> or <code>sqlite3</code>? Wrap it in <code>blocking_pool.run([&amp;]{ return db_query(); })</code> — the blocking syscall executes on a dedicated OS pool while your green routine parks cleanly on a <code>gorun::Channel</code>, leaving all <code>gorun</code> workers free.</p>
         </div>
         <div class="card card-accent">
-          <h4>5. 151,893 req/s &amp; 5.7x Lower Median Latency than Go</h4>
-          <p>Under 300 simultaneous I/O-bound connections, <code>goforge</code> completes 300/300 in <strong>56.5 ms</strong> on a fixed M:N worker pool (faster than 300-thread <code>std::jthread</code> at 61.6 ms). On Keep-Alive JSON APIs, <code>goforge</code> hits <strong>151,893 req/s (p50 = 92 us, p99 = 635 us)</strong> — outperforming both Go 1.27 (42,504 req/s) and raw Classic Async Asio (122,001 req/s).</p>
+          <h4>5. 142,643 req/s, 69 us p50 &amp; 48.4 ms at 300 Concurrent I/O</h4>
+          <p>Powered 100% natively by <code>gorun::net</code> (Windows IOCP, Linux <code>epoll</code>, macOS <code>kqueue</code> &mdash; zero Asio dependency!). Under 300 simultaneous I/O-bound connections, <code>goforge</code> completes 300/300 in <strong>48.4 ms</strong> on a fixed M:N worker pool (21% faster than 300-thread <code>std::jthread</code> at 61.6 ms). On Keep-Alive JSON APIs, <code>goforge</code> hits <strong>142,643 req/s (p50 = 69 us)</strong> &mdash; 3.36x faster RPS and 7.6x lower median latency than Go 1.27, and +17% faster RPS than raw Classic Async Asio (122,001 req/s).</p>
         </div>
         <div class="card card-green">
           <h4>6. Production-Ready Out of the Box</h4>
@@ -516,13 +516,13 @@
     <!-- INSTALLATION -->
     <section id="install">
       <h2>Quick Installation (CMake FetchContent)</h2>
-      <p><code>goforge</code> is header-only and automatically pulls <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> and header-only Standalone Asio via CMake <code>FetchContent</code>:</p>
+      <p><code>goforge</code> is header-only and runs 100% natively on <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> (with built-in IOCP / epoll / kqueue networking &mdash; zero Asio dependency!). CMake <code>FetchContent</code> pulls <code>gorun</code>, <code>nlohmann/json</code>, and embedded SQLite 3 automatically:</p>
       <pre><code>include(FetchContent)
 
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.2.0-alpha
+    GIT_TAG        main
 )
 FetchContent_MakeAvailable(goforge)
 
@@ -554,7 +554,7 @@ target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
 +-------------------------------------------------------------------+
 |                       gorun Runtime (M:N)                         |
 |  - Work-stealing scheduler, Channel&lt;T&gt;, Mutex, WaitGroup, Context |
-|  - Go-netpoll-style non-blocking Standalone Asio &lt;-&gt; gorun bridge |
+|  - Native Async NetPoller (gorun::net: IOCP / epoll / kqueue)     |
 +-------------------------------------------------------------------+</code></pre>
     </section>
 
@@ -694,10 +694,10 @@ health.mount(router, metrics);</code></pre>
       </div>
       <div class="bench-row">
         <div class="bench-label">
-          <span>goforge (Full Stack: Router + Scoped DI + Lock-Free Metrics + JSON)</span>
-          <span>151,893 req/s | p50: 92 us | p99: 635 us [3.57x Faster than Go, +24% vs Classic Asio!]</span>
+          <span>goforge (100% Native gorun::net — ZERO Asio! Full Router + DI + Metrics + JSON)</span>
+          <span>142,643 req/s | p50: 69 us | p99: 1,033 us [3.36x Faster than Go, 3.5x Lower p50 vs Asio!]</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-goforge" style="width: 91.7%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-goforge" style="width: 86.1%;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
@@ -728,11 +728,11 @@ health.mount(router, metrics);</code></pre>
           </thead>
           <tbody>
             <tr>
-              <td><strong><code>goforge</code> (Full Stack + <code>gorun</code> M:N)</strong></td>
+              <td><strong><code>goforge</code> (100% Native <code>gorun::net</code>, Zero Asio)</strong></td>
               <td><strong>300 / 300 OK</strong></td>
-              <td><strong>56.5 ms</strong> (5,309 req/s)</td>
-              <td><strong>Fixed 16 workers (+ 2 I/O)</strong></td>
-              <td>4 lines sequential C++ (DI, DTOs, Middleware)</td>
+              <td><strong>48.4 ms</strong> (6,197 req/s)</td>
+              <td><strong>Fixed 16 M:N workers (+ 2 poller)</strong></td>
+              <td>4 lines sequential C++ (DI, DTOs, ORM, Middleware)</td>
             </tr>
             <tr>
               <td><strong>Classic Async Standalone Asio</strong></td>
@@ -817,20 +817,24 @@ health.mount(router, metrics);</code></pre>
 
     <!-- TESTS -->
     <section id="tests">
-      <h2>35 Automated Verification Tests (5 Suites)</h2>
+      <h2>45 Automated Verification Tests (7 Suites)</h2>
       <pre><code>Test project C:/Users/nazer/OneDrive/Desktop/goforge/build
-    Start 1: goforge_stage1_tests      (10 tests: Lifetimes, Auto-DI, Cycles, Captive, Lifecycle, BlockingPool)
-1/5 Test #1: goforge_stage1_tests .........   Passed
-    Start 2: goforge_stage2_tests      (7 tests: HTTP/1.1 Keep-Alive, 300 concurrent gorun load, Zero OS blocking)
-2/5 Test #2: goforge_stage2_tests .........   Passed
-    Start 3: goforge_stage3_tests      (8 tests: Trie Router, Groups, DI Handlers, Recovery, Timeout, RateLimit)
-3/5 Test #3: goforge_stage3_tests .........   Passed
-    Start 4: goforge_stage4_tests      (4 tests: JSON Logger, Metrics p50/p99/Prometheus, /healthz, /readyz)
-4/5 Test #4: goforge_stage4_tests .........   Passed
-    Start 5: goforge_stage5_json_tests (6 tests: goforge::H, GOFORGE_JSON_DTO, std::optional, 400/422 validation)
-5/5 Test #5: goforge_stage5_json_tests ....   Passed
+    Start 1: goforge_stage1_tests                (10 tests: Lifetimes, Auto-DI, Cycles, Captive, Lifecycle, BlockingPool)
+1/7 Test #1: goforge_stage1_tests ..............   Passed
+    Start 2: goforge_stage2_tests                (7 tests: Native gorun::net HTTP/1.1 Keep-Alive, 300 concurrent load, Zero OS blocking)
+2/7 Test #2: goforge_stage2_tests ..............   Passed
+    Start 3: goforge_stage3_tests                (8 tests: Trie Router, Groups, DI Handlers, Recovery, Timeout, RateLimit)
+3/7 Test #3: goforge_stage3_tests ..............   Passed
+    Start 4: goforge_stage4_tests                (4 tests: JSON Logger, Metrics p50/p99/Prometheus, /healthz, /readyz)
+4/7 Test #4: goforge_stage4_tests ..............   Passed
+    Start 5: goforge_stage5_json_tests           (6 tests: goforge::H, GOFORGE_JSON_DTO, std::optional, 400/422 validation)
+5/7 Test #5: goforge_stage5_json_tests .........   Passed
+    Start 6: goforge_stage6_ergonomics_query     (5 tests: WebApp, Zero-Lambda Controllers, Typed Extractors, Fluent Query AST)
+6/7 Test #6: goforge_stage6_ergonomics_query ...   Passed
+    Start 7: goforge_stage7_orm_tests            (5 tests: Multi-Dialect SQL AST Compiler, SQLite 3 DbContext, UoW, Migrations, REST)
+7/7 Test #7: goforge_stage7_orm_tests ..........   Passed
 
-100% tests passed out of 5 (35/35 assertions, 0 compiler warnings under -Wall -Wextra -Wpedantic)</code></pre>
+100% tests passed out of 7 (45/45 tests in 2.25 sec, 0 warnings under -Wall -Wextra -Wpedantic, 0 Asio dependencies)</code></pre>
     </section>
 
     <footer>

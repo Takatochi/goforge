@@ -9,9 +9,9 @@
 [![Built on gorun](https://img.shields.io/badge/Runtime-gorun%20M%3AN-34d399)](https://github.com/Takatochi/gorun)
 [![Docs & Live Playground](https://img.shields.io/badge/Docs%20%26%20Live%20Playground-GitHub%20Pages-38bdf8)](https://takatochi.github.io/goforge/)
 
-`goforge` is a standalone, header-only C++20/23 web and backend application framework built on top of the [`gorun`](https://github.com/Takatochi/gorun) M:N green threads runtime and header-only Standalone Asio.
+`goforge` is a standalone, header-only C++20/23 web, DI, query, and EF-style ORM framework built **100% natively on top of [`gorun`](https://github.com/Takatochi/gorun)** — its M:N green threads runtime and built-in IOCP / epoll / kqueue network poller (`gorun::net`, **zero Asio dependency**).
 
-It combines **Uber Fx-style Dependency Injection & Lifecycle**, **Gin-style Trie Routing & Middleware**, **Go-netpoll-style non-blocking TCP I/O**, and **Production Observability** — letting C++ developers write clean synchronous-looking handlers with zero callback hell and zero viral `co_await`.
+It combines **Uber Fx-style Dependency Injection & Lifecycle**, **Gin-style Trie Routing & Middleware**, **Zero-Lambda Controllers & Fluent Query AST**, **EF-Style `DbContext` / `DbSet<T>` ORM**, **Native `gorun::net` Async TCP I/O**, and **Production Observability** — letting C++ developers write clean synchronous-looking handlers with zero callback hell and zero viral `co_await`.
 
 Created by **Artur Havor** and licensed under the **Apache License 2.0**.
 
@@ -49,7 +49,7 @@ Explore the full documentation, visual benchmarks, and run real `goforge` C++20 
 +-------------------------------------------------------------------+
 |                       gorun Runtime (M:N)                         |
 |  - Work-stealing scheduler, Channel<T>, Mutex, WaitGroup, Context |
-|  - Go-netpoll-style non-blocking Standalone Asio <-> gorun bridge |
+|  - Native Async NetPoller (gorun::net: IOCP / epoll / kqueue)     |
 +-------------------------------------------------------------------+
 ```
 
@@ -78,7 +78,7 @@ include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.2.0-alpha
+    GIT_TAG        main
 )
 FetchContent_MakeAvailable(goforge)
 
@@ -175,7 +175,7 @@ struct UserController {
 };
 
 int main() {
-    auto app = WebApp::create({.port = 8080, .io_threads = 2})
+    auto app = WebApp::create({.port = 8080})
         .singleton<IUserRepo, MemoryUserRepo>()
         .use_defaults(); // recovery + metrics + JSON access log + /healthz, /readyz, /metrics
 
@@ -253,21 +253,22 @@ Page<User> page = db.users()
 
 ## 4-Way HTTP/1.1 Performance Benchmarks (16 Logical Cores, Windows x64)
 
-All four benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_asio_classic.cpp](./benchmarks/bench_asio_classic.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp)) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`) using identical client harnesses:
+All benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp), plus historical Classic Async Asio reference) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`) using identical raw-socket client harnesses. `goforge` runs **100% on native `gorun::net` (IOCP / epoll / kqueue)** with **zero Asio dependency**:
 
-| Workload | `goforge` (Full Stack: Router + Scoped DI + Metrics + JSON) | Classic Async Asio (Raw Callbacks, 2 I/O threads) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
+| Workload | `goforge` (100% Native `gorun::net` + Router + DI + Metrics + JSON) | Classic Async Asio Reference (Raw Callbacks, 2 I/O threads) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **151,893 req/s**, **p50: 92 us**, **p99: 635 us** (`16000/16000`) | 122,001 req/s, p50: 239 us, p99: 448 us (`16000/16000`) | 42,504 req/s, p50: 524 us, p99: 4,234 us (`16000/16000`) | 165,680 req/s, p50: 36 us (raw socket) |
-| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **56.5 ms** (`5,309 req/s`), **fixed 16 M:N workers** | **300/300 OK**, **38.5 ms** (`7,793 req/s`), **2 I/O threads** | 214/300 OK (ephemeral ports), 42.6 ms (`5,024 req/s`), M:N | 300/300 OK, 61.6 ms, **spawns 300 OS threads** |
+| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **142,643 req/s**, **p50: 69 us**, **p99: 1,033 us** (`16000/16000`) | 122,001 req/s, p50: 239 us, p99: 448 us (`16000/16000`) | 42,504 req/s, p50: 524 us, p99: 4,234 us (`16000/16000`) | 165,680 req/s, p50: 36 us (raw socket) |
+| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **48.4 ms** (`6,197 req/s`), **fixed 16 M:N workers** | **300/300 OK**, **38.5 ms** (`7,793 req/s`), **2 I/O threads** | 214/300 OK (ephemeral ports), 42.6 ms (`5,024 req/s`), M:N | 300/300 OK, 61.6 ms, **spawns 300 OS threads** |
 
-### `goforge` vs. Classic Async Standalone Asio: Engineering Breakdown
+### `goforge` (Native `gorun::net`) vs. Classic Async Standalone Asio: Engineering Breakdown
 
-| Aspect | Classic Async Asio (Callbacks) | `goforge` (`gorun` M:N + Asio) |
+| Aspect | Classic Async Asio (Callbacks) | `goforge` (100% Native `gorun` M:N + `gorun::net`) |
 | :--- | :--- | :--- |
-| **Keep-Alive Throughput & Latency** | `122.0k req/s`, `p50: 239 us`, `p99: 448 us` (raw socket parser, no DI/Router/Metrics). | **`151.9k req/s` (+24.5% faster!)**, **`p50: 92 us` (2.6x lower!)**, **`p99: 635 us`** — with full Trie Router, Scoped DI, `nlohmann/json`, and lock-free Metrics! (And **3.57x faster RPS / 6.7x lower p99 than Go 1.27**.) |
-| **300 Concurrent I/O Burst** | `38.5 ms` on 2 I/O threads (zero context switch). | **`56.5 ms` (`5,309 req/s`, 300/300 OK)** on fixed M:N workers — faster than `std::jthread` (`61.6 ms`) without spawning 300 OS threads! |
+| **Keep-Alive Throughput & Latency** | `122.0k req/s`, `p50: 239 us`, `p99: 448 us` (raw socket parser, no DI/Router/Metrics). | **`142.6k req/s` (+16.9% faster!)**, **`p50: 69 us` (3.46x lower!)**, **`p99: 1,033 us`** — with full Trie Router, Scoped DI, `nlohmann/json`, and lock-free Metrics! (And **3.36x faster RPS / 7.6x lower median latency than Go 1.27**.) |
+| **300 Concurrent I/O Burst** | `38.5 ms` on 2 I/O threads (zero context switch). | **`48.4 ms` (`6,197 req/s`, 300/300 OK)** on fixed M:N workers — **14.3% faster** than the previous Asio bridge (`56.5 ms`) and **21.4% faster** than 300-thread `std::jthread` (`61.6 ms`)! |
+| **External Network Dependency** | Requires Standalone Asio or Boost.Asio. | **Zero external networking dependencies** — powered natively by `gorun::net` (Windows IOCP `GetQueuedCompletionStatusEx`, Linux `epoll`, macOS/BSD `kqueue`). |
 | **Handler Code Style** | `enable_shared_from_this`, manual `self` capture across nested lambdas, `asio::strand`, manual `steady_timer` state machine. | **Plain sequential C++**: `c.bind_json<Dto>()`, `gorun::Mutex`, `gorun::Channel`, `try/catch`, `GORUN_DEFER`, automatic DI injection. |
-| **Exception & Lifetime Safety** | Unhandled exceptions inside callbacks escape to `io_context::run()`; stack variables cannot cross async boundaries. | Local stack variables live safely across every socket read/write/sleep (fixed 128 KB `gorun` stacks); `recovery()` isolates handler exceptions into `500 JSON`. |
+| **Exception & Lifetime Safety** | Unhandled exceptions inside callbacks escape to `io_context::run()`; stack variables cannot cross async boundaries. | Local stack variables live safely across every socket read/write/sleep (configurable `gorun::StackSize`); `recovery()` isolates handler exceptions into `500 JSON`. |
 
 #### Side-by-Side Code: Non-Blocking Wait + JSON Response
 
@@ -292,7 +293,7 @@ class Session : public std::enable_shared_from_this<Session> {
 };
 ```
 
-**`goforge` (4 lines — same non-blocking Asio engine under the hood, zero callbacks):**
+**`goforge` (4 lines — 100% native `gorun::net` IOCP/epoll/kqueue under the hood, zero Asio, zero callbacks):**
 ```cpp
 router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
     gorun::sleep_for(10ms); // Parks green routine without blocking OS workers!
@@ -332,7 +333,6 @@ ctest --test-dir build --output-on-failure
 
 # Benchmarks:
 .\build\bench_goforge_http.exe
-.\build\bench_asio_classic.exe
 go run benchmarks\bench_go_http.go
 .\build\bench_std_http.exe
 ```
