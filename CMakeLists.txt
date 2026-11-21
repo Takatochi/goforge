@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.4.0 LANGUAGES CXX)
+project(goforge VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,7 +48,22 @@ if(NOT TARGET gorun::gorun)
 endif()
 
 # ----------------------------------------------------------------------------
-# Dependency 2: Standalone Asio (header-only non-blocking I/O reactor)
+# Dependency 2: nlohmann/json (Header-only JSON Serialization & DTO Binding)
+# ----------------------------------------------------------------------------
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    set(JSON_Install OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
+# ----------------------------------------------------------------------------
+# Dependency 3: Standalone Asio (Header-only non-blocking I/O reactor)
 # ----------------------------------------------------------------------------
 if(GOFORGE_ENABLE_ASIO)
     FetchContent_Declare(
@@ -79,7 +94,7 @@ target_include_directories(goforge INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(goforge INTERFACE gorun::gorun)
+target_link_libraries(goforge INTERFACE gorun::gorun nlohmann_json::nlohmann_json)
 
 if(GOFORGE_ENABLE_ASIO)
     target_link_libraries(goforge INTERFACE goforge_asio)
@@ -93,7 +108,7 @@ else()
 endif()
 
 # ----------------------------------------------------------------------------
-# Tests & Examples
+# Tests, Examples & Benchmarks
 # ----------------------------------------------------------------------------
 if(GOFORGE_BUILD_TESTS)
     enable_testing()
@@ -101,6 +116,10 @@ if(GOFORGE_BUILD_TESTS)
     add_executable(goforge_stage1_tests tests/test_stage1_di.cpp)
     target_link_libraries(goforge_stage1_tests PRIVATE goforge::goforge)
     add_test(NAME goforge_stage1_tests COMMAND goforge_stage1_tests)
+
+    add_executable(goforge_stage5_json_tests tests/test_stage5_json.cpp)
+    target_link_libraries(goforge_stage5_json_tests PRIVATE goforge::goforge)
+    add_test(NAME goforge_stage5_json_tests COMMAND goforge_stage5_json_tests)
 
     if(GOFORGE_ENABLE_ASIO)
         add_executable(goforge_stage2_tests tests/test_stage2_http.cpp)

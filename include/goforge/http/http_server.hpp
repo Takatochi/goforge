@@ -154,12 +154,9 @@ class HttpServer {
                     resp = HttpResponse::text(404, "Not Found\n");
                 }
             } catch (const std::exception& ex) {
-                resp = HttpResponse::json(
-                    500,
-                    std::string("{\"error\":\"internal_server_error\",\"message\":\"") + ex.what() + "\"}"
-                );
+                resp = HttpResponse::error(500, "internal_server_error", ex.what());
             } catch (...) {
-                resp = HttpResponse::json(500, "{\"error\":\"internal_server_error\"}");
+                resp = HttpResponse::error(500, "internal_server_error");
             }
 
             // 4. Write serialized HTTP/1.1 response without blocking OS workers

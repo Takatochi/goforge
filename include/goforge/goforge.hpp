@@ -5,6 +5,7 @@
  * @brief Umbrella header for the goforge C++20/23 web & application framework built on gorun.
  */
 
+#include "goforge/json.hpp"
 #include "goforge/di.hpp"
 #include "goforge/lifecycle.hpp"
 #include "goforge/blocking_pool.hpp"

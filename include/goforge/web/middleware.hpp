@@ -44,13 +44,10 @@ inline HandlerFunc recovery(std::function<void(const HttpContext&, const std::st
             c.next();
         } catch (const std::exception& ex) {
             if (cb) cb(c, ex.what());
-            c.abort_with_json(
-                500,
-                std::string("{\"error\":\"internal_server_error\",\"message\":\"") + ex.what() + "\"}"
-            );
+            c.abort_with_error(500, "internal_server_error", ex.what());
         } catch (...) {
             if (cb) cb(c, "unknown exception");
-            c.abort_with_json(500, "{\"error\":\"internal_server_error\"}");
+            c.abort_with_error(500, "internal_server_error");
         }
     };
 }
@@ -96,7 +93,7 @@ inline HandlerFunc timeout(std::chrono::milliseconds limit) {
         c.next();
 
         if (tctx.err() == gorun::ContextError::DeadlineExceeded && !c.is_written()) {
-            c.abort_with_json(504, "{\"error\":\"gateway_timeout\",\"message\":\"request deadline exceeded\"}");
+            c.abort_with_error(504, "gateway_timeout", "request deadline exceeded");
         }
     };
 }
@@ -114,7 +111,7 @@ inline HandlerFunc rate_limit(std::size_t max_concurrent, bool reject_immediatel
     return [sem, reject_immediately](HttpContext& c) {
         if (reject_immediately) {
             if (!sem->try_acquire()) {
-                c.abort_with_json(429, "{\"error\":\"too_many_requests\"}");
+                c.abort_with_error(429, "too_many_requests");
                 return;
             }
         } else {
@@ -134,13 +131,13 @@ inline HandlerFunc bearer_auth(std::function<std::optional<std::string>(std::str
         auto auth = c.header("Authorization");
         constexpr std::string_view kPrefix = "Bearer ";
         if (!auth || auth->size() <= kPrefix.size() || auth->substr(0, kPrefix.size()) != kPrefix) {
-            c.abort_with_json(401, "{\"error\":\"unauthorized\",\"message\":\"missing bearer token\"}");
+            c.abort_with_error(401, "unauthorized", "missing bearer token");
             return;
         }
         std::string_view token = auth->substr(kPrefix.size());
         auto subject = validator ? validator(token) : std::nullopt;
         if (!subject) {
-            c.abort_with_json(401, "{\"error\":\"unauthorized\",\"message\":\"invalid token\"}");
+            c.abort_with_error(401, "unauthorized", "invalid token");
             return;
         }
         c.set("auth_subject", std::move(*subject));

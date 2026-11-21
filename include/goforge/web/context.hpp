@@ -23,6 +23,7 @@
 
 #include "gorun/gorun.hpp"
 #include "goforge/di.hpp"
+#include "goforge/json.hpp"
 #include "goforge/http/http_types.hpp"
 
 namespace goforge::web {
@@ -268,6 +269,47 @@ public:
         return scope().invoke(std::forward<Fn>(fn));
     }
 
+    // ---- Typed JSON Request Binding & Validation (Gin ShouldBindJSON style) ----
+
+    /// Parses the raw HTTP body into a generic `goforge::Json` value without writing an error response.
+    [[nodiscard]] BindResult<Json> try_bind_json_value() const {
+        return parse_json_body(req_->body);
+    }
+
+    /// Parses the raw HTTP body into a `goforge::Json` value; automatically aborts with `400` on parse error.
+    [[nodiscard]] std::optional<Json> bind_json_value() {
+        auto res = try_bind_json_value();
+        if (!res.ok()) {
+            abort_with_error(res.http_status, res.error_code, res.message);
+            return std::nullopt;
+        }
+        return std::move(res.value);
+    }
+
+    /**
+     * @brief Parses and validates the JSON body into DTO `T` without writing an error response.
+     *        Checks JSON syntax/schema (`400`) and calls `dto.validate()` (`422`) if defined.
+     */
+    template <typename T>
+    [[nodiscard]] BindResult<T> try_bind_json() const {
+        return parse_and_validate_json<T>(req_->body);
+    }
+
+    /**
+     * @brief Parses and validates the JSON body into DTO `T` (mirrors Gin's `ShouldBindJSON`).
+     *        On failure, automatically writes a structured JSON error (`400` or `422`), aborts the
+     *        middleware chain, and returns `std::nullopt`.
+     */
+    template <typename T>
+    [[nodiscard]] std::optional<T> bind_json() {
+        auto res = try_bind_json<T>();
+        if (!res.ok()) {
+            abort_with_error(res.http_status, res.error_code, res.message);
+            return std::nullopt;
+        }
+        return std::move(res.value);
+    }
+
     // ---- Response builders ----
     HttpContext& status(int code) {
         resp_.status = code;
@@ -287,11 +329,39 @@ public:
         written_ = true;
     }
 
-    void json(int code, std::string json_body) {
+    /// Writes a pre-serialized raw JSON string response.
+    void json_raw(int code, std::string raw_json_body) {
         resp_.status = code;
-        resp_.body = std::move(json_body);
+        resp_.body = std::move(raw_json_body);
         resp_.headers.set("Content-Type", "application/json; charset=utf-8");
         written_ = true;
+    }
+
+    /// Writes a pre-serialized JSON string (backwards-compatible overload).
+    void json(int code, std::string raw_json_body) {
+        json_raw(code, std::move(raw_json_body));
+    }
+
+    /// Exact-match overload for raw JSON string literals (prevents ambiguity with `nlohmann::json(const char*)`).
+    void json(int code, const char* raw_json_body) {
+        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+    }
+
+    /// Serializes a `goforge::Json` / `goforge::H` value to JSON and sets `Content-Type: application/json`.
+    void json(int code, const Json& value) {
+        json_raw(code, value.dump());
+    }
+
+    /// Serializes any DTO (`GOFORGE_JSON_DTO`), `std::vector<Dto>`, `std::map`, etc. directly to JSON!
+    template <typename T>
+        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
+    void json(int code, const T& dto) {
+        json_raw(code, Json(dto).dump());
+    }
+
+    /// Writes a standardized structured JSON error: `{"error": error_code, "message": message}`.
+    void error(int code, std::string_view error_code, std::string_view message = "") {
+        json(code, make_error_json(error_code, message));
     }
 
     void no_content() {
@@ -330,8 +400,30 @@ public:
         abort();
     }
 
-    void abort_with_json(int code, std::string json_body) {
-        json(code, std::move(json_body));
+    void abort_with_json(int code, std::string raw_json_body) {
+        json_raw(code, std::move(raw_json_body));
+        abort();
+    }
+
+    void abort_with_json(int code, const char* raw_json_body) {
+        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+        abort();
+    }
+
+    void abort_with_json(int code, const Json& value) {
+        json(code, value);
+        abort();
+    }
+
+    template <typename T>
+        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
+    void abort_with_json(int code, const T& dto) {
+        json(code, dto);
+        abort();
+    }
+
+    void abort_with_error(int code, std::string_view error_code, std::string_view message = "") {
+        error(code, error_code, message);
         abort();
     }
 

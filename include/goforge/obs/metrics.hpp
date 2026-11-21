@@ -262,19 +262,19 @@ public:
     /// Mounts `/healthz`, `/readyz`, and `/metrics` onto a `goforge::web::Router`.
     void mount(web::Router& router, MetricsRegistry& metrics) {
         router.get("/healthz", [](web::HttpContext& c) {
-            c.json(200, "{\"status\":\"alive\"}");
+            c.json(200, H{{"status", "alive"}});
         });
 
         router.get("/readyz", [this](web::HttpContext& c) {
             auto [ok, body] = evaluate_readiness();
-            c.json(ok ? 200 : 503, std::move(body));
+            c.json_raw(ok ? 200 : 503, std::move(body));
         });
 
         router.get("/metrics", [&metrics](web::HttpContext& c) {
             if (c.query_or("format") == "prometheus") {
                 c.text(200, metrics.to_prometheus());
             } else {
-                c.json(200, metrics.to_json());
+                c.json_raw(200, metrics.to_json());
             }
         });
     }

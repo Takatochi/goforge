@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "goforge/json.hpp"
+
 namespace goforge::http {
 
 namespace detail {
@@ -54,6 +56,7 @@ inline std::string_view default_reason_phrase(int status) noexcept {
         case 408: return "Request Timeout";
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
+        case 422: return "Unprocessable Entity";
         case 429: return "Too Many Requests";
         case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
@@ -157,12 +160,30 @@ struct HttpResponse {
         return r;
     }
 
-    static HttpResponse json(int code, std::string json_body) {
+    static HttpResponse json(int code, std::string raw_json_body) {
         HttpResponse r;
         r.status = code;
-        r.body = std::move(json_body);
+        r.body = std::move(raw_json_body);
         r.headers.set("Content-Type", "application/json; charset=utf-8");
         return r;
+    }
+
+    static HttpResponse json(int code, const char* raw_json_body) {
+        return json(code, std::string(raw_json_body ? raw_json_body : ""));
+    }
+
+    static HttpResponse json(int code, const Json& obj) {
+        return json(code, obj.dump());
+    }
+
+    template <typename T>
+        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
+    static HttpResponse json(int code, const T& dto) {
+        return json(code, Json(dto).dump());
+    }
+
+    static HttpResponse error(int code, std::string_view error_code, std::string_view message = "") {
+        return json(code, make_error_json(error_code, message));
     }
 
     static HttpResponse empty(int code = 204) {

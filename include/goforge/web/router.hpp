@@ -412,13 +412,13 @@ public:
                 }
                 full_chain.push_back([allow = std::move(allow_hdr)](HttpContext& c) {
                     c.set_header("Allow", allow);
-                    c.json(405, "{\"error\":\"method_not_allowed\"}");
+                    c.error(405, "method_not_allowed");
                 });
             } else if (no_route_handler_) {
                 full_chain.push_back(no_route_handler_);
             } else {
                 full_chain.push_back([](HttpContext& c) {
-                    c.json(404, "{\"error\":\"not_found\"}");
+                    c.error(404, "not_found");
                 });
             }
         }
