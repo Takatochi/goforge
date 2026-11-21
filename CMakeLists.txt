@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goforge VERSION 0.5.0 LANGUAGES CXX)
+project(goforge VERSION 0.7.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,7 @@ option(GOFORGE_BUILD_TESTS "Build goforge unit and integration tests" ${GOFORGE_
 option(GOFORGE_BUILD_EXAMPLES "Build goforge example applications" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_BUILD_BENCHMARKS "Build goforge HTTP performance benchmarks" ${GOFORGE_IS_TOP_LEVEL})
 option(GOFORGE_ENABLE_ASIO "Enable standalone Asio for non-blocking HTTP networking" ON)
+option(GOFORGE_ENABLE_SQLITE "Enable embedded SQLite 3 driver for goforge::data ORM" ON)
 set(GOFORGE_LOCAL_GORUN_DIR "" CACHE PATH "Optional local path to gorun repository (auto-detects ../Rutine if present)")
 
 # ----------------------------------------------------------------------------
@@ -84,6 +85,29 @@ if(GOFORGE_ENABLE_ASIO)
 endif()
 
 # ----------------------------------------------------------------------------
+# Dependency 4: SQLite 3 (Embedded SQL backend for goforge::data ORM)
+# ----------------------------------------------------------------------------
+if(GOFORGE_ENABLE_SQLITE)
+    find_package(SQLite3 QUIET)
+    if(NOT SQLite3_FOUND)
+        message(STATUS "[goforge] Fetching embedded SQLite 3 amalgamation via Git (zero URL download)...")
+        set(SQLITECPP_INTERNAL_SQLITE ON CACHE BOOL "" FORCE)
+        set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
+        set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
+        set(SQLITECPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SQLITECPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            sqlite3_src
+            GIT_REPOSITORY https://github.com/SRombauts/SQLiteCpp.git
+            GIT_TAG        3.3.3
+            GIT_SHALLOW    TRUE
+            SOURCE_SUBDIR  sqlite3
+        )
+        FetchContent_MakeAvailable(sqlite3_src)
+    endif()
+endif()
+
+# ----------------------------------------------------------------------------
 # goforge Core Library (Header-Only C++20/23)
 # ----------------------------------------------------------------------------
 add_library(goforge INTERFACE)
@@ -99,6 +123,15 @@ target_link_libraries(goforge INTERFACE gorun::gorun nlohmann_json::nlohmann_jso
 if(GOFORGE_ENABLE_ASIO)
     target_link_libraries(goforge INTERFACE goforge_asio)
     target_compile_definitions(goforge INTERFACE GOFORGE_HAS_ASIO=1)
+endif()
+
+if(GOFORGE_ENABLE_SQLITE)
+    if(TARGET SQLite::SQLite3)
+        target_link_libraries(goforge INTERFACE SQLite::SQLite3)
+    elseif(TARGET sqlite3)
+        target_link_libraries(goforge INTERFACE sqlite3)
+    endif()
+    target_compile_definitions(goforge INTERFACE GOFORGE_HAS_SQLITE=1)
 endif()
 
 if(MSVC)
@@ -124,6 +157,10 @@ if(GOFORGE_BUILD_TESTS)
     add_executable(goforge_stage6_ergonomics_query_tests tests/test_stage6_ergonomics_query.cpp)
     target_link_libraries(goforge_stage6_ergonomics_query_tests PRIVATE goforge::goforge)
     add_test(NAME goforge_stage6_ergonomics_query_tests COMMAND goforge_stage6_ergonomics_query_tests)
+
+    add_executable(goforge_stage7_orm_tests tests/test_stage7_orm_data.cpp)
+    target_link_libraries(goforge_stage7_orm_tests PRIVATE goforge::goforge)
+    add_test(NAME goforge_stage7_orm_tests COMMAND goforge_stage7_orm_tests)
 
     if(GOFORGE_ENABLE_ASIO)
         add_executable(goforge_stage2_tests tests/test_stage2_http.cpp)
@@ -153,6 +190,11 @@ if(GOFORGE_BUILD_EXAMPLES)
 
         add_executable(goforge_example_04_ergonomic examples/04_ergonomic_webapp_and_query.cpp)
         target_link_libraries(goforge_example_04_ergonomic PRIVATE goforge::goforge)
+
+        if(GOFORGE_ENABLE_SQLITE)
+            add_executable(goforge_example_05_orm_rest examples/05_orm_sqlite_rest_api.cpp)
+            target_link_libraries(goforge_example_05_orm_rest PRIVATE goforge::goforge)
+        endif()
     endif()
 endif()
 
