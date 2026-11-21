@@ -216,6 +216,39 @@ auto power_users = from(users)
     .to_vec();
 ```
 
+### EF-Style ORM (`goforge::data`: `DbContext`, `DbSet<T>`, SQL AST Compiler & SQLite 3)
+
+Write **one unified query syntax** for both in-memory collections and SQL databases (`SQLite`, `PostgreSQL`, `MySQL`). Every synchronous DB call automatically offloads onto `goforge::BlockingPool` so `gorun` M:N worker threads never block:
+
+```cpp
+using namespace goforge;
+using namespace goforge::query;
+using namespace goforge::data;
+
+struct AppDbContext final : DbContext {
+    AppDbContext(std::shared_ptr<IDbDriver> drv, BlockingPool& pool)
+        : DbContext(std::move(drv), pool) {}
+
+    DbSet<User> users() noexcept { return set<User>(); }
+};
+
+auto sqlite = SqliteDriver::open("app.db"); // WAL mode + foreign keys + thread-safe transactions
+AppDbContext db(sqlite, pool);
+db.ensure_created<User>();                  // Auto CREATE TABLE IF NOT EXISTS from GOFORGE_MODEL_TABLE!
+
+// Unit of Work: staged INSERT/UPDATE/DELETE executed atomically inside one transaction
+User u{0, "Artur Havor", "artur@goforge.dev", "admin", 25, true, "Creator"};
+db.add(u);
+db.save_changes();                          // Auto-backfills u.id from last_insert_rowid()!
+
+// Exact same compile-time AST compiles directly to parameterized SQL (zero SQL injection!):
+// SELECT "id", ... FROM "users" WHERE ("age" >= ?1 AND "role" IN (?2, ?3)) ORDER BY "age" DESC LIMIT 20 OFFSET 0
+Page<User> page = db.users()
+    .where(col(&User::age) >= 18 && col(&User::role).in({"admin", "mod"}))
+    .order_by_desc(&User::age)
+    .paginate(1, 20);                       // Runs COUNT(*) + LIMIT/OFFSET -> ready for HTTP JSON!
+```
+
 ---
 
 ## 4-Way HTTP/1.1 Performance Benchmarks (16 Logical Cores, Windows x64)
@@ -269,7 +302,7 @@ router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
 
 ---
 
-## Verification Test Suites (40 Automated Tests Across 6 Suites)
+## Verification Test Suites (45 Automated Tests Across 7 Suites)
 
 | Test Suite | Coverage | Result |
 | :--- | :--- | :---: |
@@ -279,6 +312,7 @@ router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
 | [test_stage4_prod.cpp](./tests/test_stage4_prod.cpp) | 4 tests: RFC-8259 `StructuredLogger`, `MetricsRegistry` (`p50`/`p95`/`p99`, Prometheus), `HealthRegistry` (`/healthz`, `/readyz` 200/503), live graceful draining | **4/4 PASSED** |
 | [test_stage5_json.cpp](./tests/test_stage5_json.cpp) | 6 tests: `goforge::H`, `GOFORGE_JSON_DTO` / `GOFORGE_JSON_DTO_DEFAULT`, `std::optional<T>`, `c.bind_json<T>()` (`400` / `422` auto-validation), nested collections, live TCP DTO CRUD | **6/6 PASSED** |
 | [test_stage6_ergonomics_query.cpp](./tests/test_stage6_ergonomics_query.cpp) | 5 tests: `WebApp` facade, zero-lambda `ControllerGroup`, typed `Body`/`Path`/`Query`/`Header` extractors, smart returns (`Result<T>`, `optional`, `Page<T>`), fluent `goforge::query` AST + `GOFORGE_MODEL_TABLE` reflection + live TCP roundtrip | **5/5 PASSED** |
+| [test_stage7_orm_data.cpp](./tests/test_stage7_orm_data.cpp) | 5 tests: Multi-dialect SQL AST compiler (`SQLite`/`Postgres`/`MySQL`), embedded SQLite 3 `DbContext` + Unit of Work + rollback, `DbSet<T>` queries & pagination, versioned migrations, concurrent `WebApp` + `BlockingPool` + SQLite 3 REST API | **5/5 PASSED** |
 
 ---
 
@@ -294,6 +328,7 @@ ctest --test-dir build --output-on-failure
 .\build\goforge_example_02_http.exe          # self-test (or --serve on :8080)
 .\build\goforge_example_03_rest.exe          # full Fx + Gin REST API (or --serve on :8080)
 .\build\goforge_example_04_ergonomic.exe     # lightweight WebApp + Controllers + Fluent Query AST
+.\build\goforge_example_05_orm_rest.exe      # EF-style DbContext + SQLite 3 + WebApp REST API
 
 # Benchmarks:
 .\build\bench_goforge_http.exe

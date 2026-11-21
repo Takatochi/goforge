@@ -433,11 +433,12 @@
         <div class="playground-toolbar">
           <div class="playground-tabs">
             <button class="tab-btn active" onclick="loadExample(0)">01. WebApp, Controllers &amp; Query</button>
-            <button class="tab-btn" onclick="loadExample(1)">02. Fx DI &amp; Lifecycle</button>
-            <button class="tab-btn" onclick="loadExample(2)">03. Typed JSON DTOs &amp; Router</button>
-            <button class="tab-btn" onclick="loadExample(3)">04. Recovery, Timeout &amp; 429</button>
-            <button class="tab-btn" onclick="loadExample(4)">05. Metrics, Healthz &amp; Logs</button>
-            <button class="tab-btn" onclick="loadExample(5)">06. Custom Sandbox</button>
+            <button class="tab-btn" onclick="loadExample(1)">02. EF-Style ORM &amp; SQL Compiler</button>
+            <button class="tab-btn" onclick="loadExample(2)">03. Fx DI &amp; Lifecycle</button>
+            <button class="tab-btn" onclick="loadExample(3)">04. Typed JSON DTOs &amp; Router</button>
+            <button class="tab-btn" onclick="loadExample(4)">05. Recovery, Timeout &amp; 429</button>
+            <button class="tab-btn" onclick="loadExample(5)">06. Metrics, Healthz &amp; Logs</button>
+            <button class="tab-btn" onclick="loadExample(6)">07. Custom Sandbox</button>
           </div>
           <div class="playground-actions">
             <select id="pg-flags" class="compiler-select" title="Compiler Flags">
@@ -649,7 +650,25 @@ router.use(goforge::web::middleware::rate_limit(256));     // gorun::Semaphore c
     });
 }</code></pre>
 
-      <h3 id="guide-obs">6. Kubernetes Health Probes &amp; Prometheus Metrics</h3>
+      <h3 id="guide-obs">6. EF-Style ORM (<code>goforge::data</code>: <code>DbContext</code>, <code>DbSet&lt;T&gt;</code> &amp; SQLite 3)</h3>
+      <p>The exact same <code>goforge::query</code> Expression Tree compiles directly to parameterized SQL across SQLite, PostgreSQL, and MySQL — offloaded onto <code>BlockingPool</code> automatically:</p>
+      <pre><code class="lang-cpp">using namespace goforge::query;
+using namespace goforge::data;
+
+auto sqlite = SqliteDriver::open("app.db");
+DbContext db(sqlite, blocking_pool);
+db.ensure_created&lt;User&gt;(); // Auto CREATE TABLE IF NOT EXISTS from GOFORGE_MODEL_TABLE
+
+User u{0, "Artur", "artur@goforge.dev", "admin", 25, true, "Creator"};
+db.add(u);
+db.save_changes(); // Transactional INSERT + auto-populates u.id!
+
+auto page = db.set&lt;User&gt;()
+    .where(col(&amp;User::age) &gt;= 18 &amp;&amp; col(&amp;User::role).in({"admin", "mod"}))
+    .order_by_desc(&amp;User::age)
+    .paginate(1, 20); // Parameterized SQL COUNT(*) + LIMIT/OFFSET -&gt; JSON Page&lt;User&gt;!</code></pre>
+
+      <h3>7. Kubernetes Health Probes &amp; Prometheus Metrics</h3>
       <pre><code class="lang-cpp">health.add_check("postgres", [&amp;]() -&gt; goforge::obs::HealthCheckResult {
     return db.is_alive()
         ? goforge::obs::HealthCheckResult{true, "pool healthy"}
@@ -908,7 +927,68 @@ int main() {
         ]
       },
       {
-        filename: "playground/02_fx_di_lifecycle.cpp",
+        filename: "playground/02_ef_orm_sql_compiler.cpp",
+        code: `#include <iostream>
+#include <memory>
+#include <optional>
+#include <string>
+#include "goforge/goforge.hpp"
+
+using namespace goforge::query;
+using namespace goforge::data;
+
+struct User {
+    int id{0};
+    std::string name, email, role{"user"};
+    int age{0};
+    bool active{true};
+    std::optional<std::string> bio;
+};
+GOFORGE_MODEL_TABLE(User, "users", id, name, email, role, age, active, bio)
+
+int main() {
+    // 1. Inspect PostgreSQL DDL & parameterized SELECT compiled from goforge::query AST!
+    auto pg_drv = std::make_shared<RecordingDbDriver>(SqlDialect::Postgres);
+    DbContext pg_db(pg_drv);
+
+    std::cout << "[Postgres DDL]\\n  "
+              << SqlCompiler::build_create_table_sql<User>(SqlDialect::Postgres) << "\\n\\n";
+
+    auto q_pg = pg_db.set<User>()
+        .where(col(&User::age) >= 18 && col(&User::role).in({"admin", "mod"}))
+        .where(col(&User::name).icontains("art") && col(&User::bio).is_not_null())
+        .order_by(&User::role)
+        .then_by_desc(&User::age)
+        .skip(0)
+        .take(20)
+        .to_sql();
+
+    std::cout << "[Postgres SELECT]\\n  " << q_pg.sql << "\\n  Params: [";
+    for (std::size_t i = 0; i < q_pg.params.size(); ++i) {
+        if (i) std::cout << ", ";
+        std::cout << q_pg.params[i].debug_string();
+    }
+    std::cout << "]\\n\\n";
+
+    // 2. Unit of Work atomic save_changes() -> BEGIN / INSERT / COMMIT!
+    User u{0, "Artur Havor", "artur@goforge.dev", "admin", 25, true, "Creator"};
+    pg_db.add(u);
+    pg_db.save_changes();
+
+    std::cout << "[Unit of Work History]\\n";
+    for (const auto& stmt : pg_drv->history()) {
+        std::cout << "  -> " << stmt.sql << "\\n";
+    }
+}`,
+        trace: [
+          { type: "info",  text: "[Postgres DDL] CREATE TABLE IF NOT EXISTS \"users\" (\"id\" BIGSERIAL PRIMARY KEY, ...)" },
+          { type: "ok",    text: "[Postgres SELECT] SELECT ... FROM \"users\" WHERE (\"age\" >= $1 AND \"role\" IN ($2, $3)) AND (\"name\" ILIKE $4 ESCAPE '\\' AND \"bio\" IS NOT NULL) ORDER BY \"role\" ASC, \"age\" DESC LIMIT 20 OFFSET 0" },
+          { type: "sched", text: "  Params: [18, 'admin', 'mod', '%art%']" },
+          { type: "ok",    text: "[Unit of Work] BEGIN TRANSACTION -> INSERT INTO \"users\" (...) VALUES ($1..$6) RETURNING \"id\" -> COMMIT" }
+        ]
+      },
+      {
+        filename: "playground/03_fx_di_lifecycle.cpp",
         code: `#include <iostream>
 #include <memory>
 #include <string>
