@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "goforge/goforge.hpp"
@@ -18,11 +19,14 @@ using namespace std::chrono_literals;
 
 namespace {
 
-bool read_keepalive_response(goforge::net::AsyncTcpSocket& sock, std::string& buf) {
+// Identical synchronous client helper to bench_asio_classic.cpp & bench_std_http.cpp
+// so all 4 servers are measured apples-to-apples without clients competing for the server's gorun workers!
+bool read_sync_response(asio::ip::tcp::socket& sock, std::string& buf) {
     char chunk[4096];
+    std::error_code ec;
     std::size_t sep = std::string::npos;
     while ((sep = buf.find("\r\n\r\n")) == std::string::npos) {
-        auto [n, ec] = sock.read_some(chunk, sizeof(chunk));
+        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
         if (ec || n == 0) return false;
         buf.append(chunk, n);
     }
@@ -40,7 +44,7 @@ bool read_keepalive_response(goforge::net::AsyncTcpSocket& sock, std::string& bu
 
     const std::size_t total = sep + 4 + content_length;
     while (buf.size() < total) {
-        auto [n, ec] = sock.read_some(chunk, sizeof(chunk));
+        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
         if (ec || n == 0) return false;
         buf.append(chunk, n);
     }
@@ -81,18 +85,17 @@ int main() {
                    goforge::http::HttpServer&) {
             router.use(metrics.middleware());
             router.get("/api/v1/users/:id", [](goforge::web::HttpContext& c) {
-                c.json(200, "{\"id\":" + c.param_or("id") + ",\"status\":\"ok\"}");
+                c.json(200, goforge::H{{"id", c.param_or("id")}, {"status", "ok"}});
             });
             router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
                 gorun::sleep_for(10ms);
-                c.json(200, "{\"waited_ms\":10}");
+                c.json(200, goforge::H{{"waited_ms", 10}});
             });
         })
         .build();
 
     app->start();
     const std::uint16_t port = app->services().resolve<goforge::http::HttpServer>().port();
-    goforge::net::AsioExecutor client_io(2);
 
     std::cout << "====================================================================================================\n";
     std::cout << "  goforge (C++20 + gorun M:N + Standalone Asio) HTTP/1.1 Benchmark Suite\n";
@@ -111,19 +114,24 @@ int main() {
 
         auto t0 = std::chrono::steady_clock::now();
         {
-            gorun::Scope scope;
+            std::vector<std::jthread> clients;
+            clients.reserve(kClients);
             for (int c = 0; c < kClients; ++c) {
                 per_client_lat[c].reserve(kReqsPerClient);
-                gorun::go([&, c]() {
-                    goforge::net::AsyncTcpSocket sock(client_io.context());
-                    if (sock.connect("127.0.0.1", port)) return;
+                clients.emplace_back([&, c]() {
+                    asio::io_context cio;
+                    asio::ip::tcp::socket sock(cio);
+                    std::error_code ec;
+                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
+                    if (ec) return;
+                    sock.set_option(asio::ip::tcp::no_delay(true), ec);
+
                     std::string buf;
                     buf.reserve(4096);
                     for (int r = 0; r < kReqsPerClient; ++r) {
                         auto r0 = std::chrono::steady_clock::now();
-                        auto [w, wec] = sock.write_all(raw_req);
-                        if (wec || w != raw_req.size()) break;
-                        if (!read_keepalive_response(sock, buf)) break;
+                        asio::write(sock, asio::buffer(raw_req), ec);
+                        if (ec || !read_sync_response(sock, buf)) break;
                         auto dt = static_cast<std::uint64_t>(
                             std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - r0
@@ -132,7 +140,6 @@ int main() {
                         per_client_lat[c].push_back(dt);
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
-                    sock.close();
                 });
             }
         }
@@ -160,18 +167,20 @@ int main() {
 
         auto t0 = std::chrono::steady_clock::now();
         {
-            gorun::Scope scope;
+            std::vector<std::jthread> clients;
+            clients.reserve(kClients);
             for (int c = 0; c < kClients; ++c) {
-                gorun::go([&]() {
-                    goforge::net::AsyncTcpSocket sock(client_io.context());
-                    if (sock.connect("127.0.0.1", port)) return;
-                    auto [w, wec] = sock.write_all(raw_req);
-                    if (wec || w != raw_req.size()) return;
+                clients.emplace_back([&]() {
+                    asio::io_context cio;
+                    asio::ip::tcp::socket sock(cio);
+                    std::error_code ec;
+                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
+                    if (ec) return;
+                    asio::write(sock, asio::buffer(raw_req), ec);
                     std::string buf;
-                    if (read_keepalive_response(sock, buf)) {
+                    if (!ec && read_sync_response(sock, buf)) {
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
-                    sock.close();
                 });
             }
         }

@@ -98,8 +98,18 @@ HandlerFunc adapt_handler(Fn&& fn) {
     }
 }
 
+struct StringViewHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+    std::size_t operator()(const std::string& s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
 struct TrieNode {
-    std::unordered_map<std::string, std::unique_ptr<TrieNode>> static_children;
+    std::unordered_map<std::string, std::unique_ptr<TrieNode>, StringViewHash, std::equal_to<>> static_children;
 
     std::string param_name;
     std::unique_ptr<TrieNode> param_child;
@@ -139,8 +149,8 @@ inline bool match_trie(const TrieNode* node,
         return false;
     }
 
-    // 1. Static segment priority
-    auto it = node->static_children.find(std::string(segs[depth]));
+    // 1. Static segment priority (zero-allocation transparent string_view lookup!)
+    auto it = node->static_children.find(segs[depth]);
     if (it != node->static_children.end()) {
         if (match_trie(it->second.get(), segs, depth + 1, out)) {
             return true;
@@ -387,11 +397,9 @@ public:
             detail::match_trie(it->second.get(), segs, 0, match);
         }
 
-        std::vector<HandlerFunc> full_chain = global_middlewares_;
-
         if (match.matched && match.chain) {
             ctx.set_params(std::move(match.params));
-            full_chain.insert(full_chain.end(), match.chain->begin(), match.chain->end());
+            ctx.set_handler_views(&global_middlewares_, match.chain);
         } else {
             // Check whether another HTTP method matches this path -> 405 Method Not Allowed
             std::vector<std::string> allowed_methods;
@@ -410,20 +418,19 @@ public:
                     if (i > 0) allow_hdr += ", ";
                     allow_hdr += allowed_methods[i];
                 }
-                full_chain.push_back([allow = std::move(allow_hdr)](HttpContext& c) {
+                ctx.set_handler_with_fallback(&global_middlewares_, [allow = std::move(allow_hdr)](HttpContext& c) {
                     c.set_header("Allow", allow);
                     c.error(405, "method_not_allowed");
                 });
             } else if (no_route_handler_) {
-                full_chain.push_back(no_route_handler_);
+                ctx.set_handler_with_fallback(&global_middlewares_, no_route_handler_);
             } else {
-                full_chain.push_back([](HttpContext& c) {
+                ctx.set_handler_with_fallback(&global_middlewares_, [](HttpContext& c) {
                     c.error(404, "not_found");
                 });
             }
         }
 
-        ctx.set_handlers(std::move(full_chain));
         ctx.next();
 
         return std::move(ctx.response());

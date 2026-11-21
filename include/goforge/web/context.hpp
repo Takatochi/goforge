@@ -133,7 +133,9 @@ class HttpContext {
     mutable std::unordered_map<std::string, std::string> query_params_;
     std::unordered_map<std::string, std::any> values_;
 
-    std::vector<HandlerFunc> handlers_;
+    const std::vector<HandlerFunc>* global_handlers_{nullptr};
+    const std::vector<HandlerFunc>* route_handlers_{nullptr};
+    std::vector<HandlerFunc> owned_route_handlers_;
     std::size_t handler_index_{0};
     bool aborted_{false};
     bool written_{false};
@@ -374,25 +376,54 @@ public:
     [[nodiscard]] http::HttpResponse& response() noexcept { return resp_; }
     [[nodiscard]] const http::HttpResponse& response() const noexcept { return resp_; }
 
-    // ---- Middleware chain execution ----
+    // ---- Middleware chain execution (zero-copy view over global + route handler chains!) ----
+    void set_handler_views(const std::vector<HandlerFunc>* global_mws,
+                           const std::vector<HandlerFunc>* route_mws) noexcept {
+        global_handlers_ = global_mws;
+        route_handlers_ = route_mws;
+        owned_route_handlers_.clear();
+        handler_index_ = 0;
+        aborted_ = false;
+    }
+
+    void set_handler_with_fallback(const std::vector<HandlerFunc>* global_mws,
+                                   HandlerFunc fallback_endpoint) {
+        global_handlers_ = global_mws;
+        owned_route_handlers_.clear();
+        owned_route_handlers_.push_back(std::move(fallback_endpoint));
+        route_handlers_ = &owned_route_handlers_;
+        handler_index_ = 0;
+        aborted_ = false;
+    }
+
     void set_handlers(std::vector<HandlerFunc> chain) {
-        handlers_ = std::move(chain);
+        global_handlers_ = nullptr;
+        owned_route_handlers_ = std::move(chain);
+        route_handlers_ = &owned_route_handlers_;
         handler_index_ = 0;
         aborted_ = false;
     }
 
     void next() {
-        while (handler_index_ < handlers_.size() && !aborted_) {
+        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+        const std::size_t total = g_sz + r_sz;
+        while (handler_index_ < total && !aborted_) {
             const std::size_t idx = handler_index_++;
-            if (handlers_[idx]) {
-                handlers_[idx](*this);
+            const HandlerFunc& fn = (idx < g_sz)
+                ? (*global_handlers_)[idx]
+                : (*route_handlers_)[idx - g_sz];
+            if (fn) {
+                fn(*this);
             }
         }
     }
 
     void abort() noexcept {
         aborted_ = true;
-        handler_index_ = handlers_.size();
+        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+        handler_index_ = g_sz + r_sz;
     }
 
     void abort_with_text(int code, std::string msg) {

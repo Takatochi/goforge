@@ -60,10 +60,8 @@ class MetricsRegistry {
     std::atomic<std::uint64_t> status_4xx_{0};
     std::atomic<std::uint64_t> status_5xx_{0};
 
-    mutable gorun::Mutex lat_mtx_;
-    std::array<std::uint64_t, kWindowSize> latencies_{};
-    std::size_t lat_pos_{0};
-    std::size_t lat_count_{0};
+    std::array<std::atomic<std::uint64_t>, kWindowSize> latencies_{};
+    std::atomic<std::uint64_t> lat_writes_{0};
 
     static std::uint64_t percentile_sorted(const std::vector<std::uint64_t>& sorted, double q) noexcept {
         if (sorted.empty()) return 0;
@@ -77,7 +75,8 @@ class MetricsRegistry {
 public:
     MetricsRegistry() = default;
 
-    void record(int status_code, std::uint64_t latency_us) {
+    /// 100% lock-free hot-path metric recording (zero mutex contention across all gorun workers!).
+    void record(int status_code, std::uint64_t latency_us) noexcept {
         total_requests_.fetch_add(1, std::memory_order_relaxed);
         if (status_code >= 200 && status_code < 300) {
             status_2xx_.fetch_add(1, std::memory_order_relaxed);
@@ -89,12 +88,8 @@ public:
             status_5xx_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        std::lock_guard<gorun::Mutex> lk(lat_mtx_);
-        latencies_[lat_pos_] = latency_us;
-        lat_pos_ = (lat_pos_ + 1) % kWindowSize;
-        if (lat_count_ < kWindowSize) {
-            ++lat_count_;
-        }
+        const std::uint64_t slot = lat_writes_.fetch_add(1, std::memory_order_relaxed) & (kWindowSize - 1);
+        latencies_[static_cast<std::size_t>(slot)].store(latency_us, std::memory_order_relaxed);
     }
 
     [[nodiscard]] MetricsSnapshot snapshot() const {
@@ -109,10 +104,12 @@ public:
         s.status_5xx = status_5xx_.load(std::memory_order_relaxed);
         s.avg_rps = (s.uptime_sec > 1e-6) ? (static_cast<double>(s.total_requests) / s.uptime_sec) : 0.0;
 
+        const std::uint64_t writes = lat_writes_.load(std::memory_order_relaxed);
+        const std::size_t count = static_cast<std::size_t>(std::min<std::uint64_t>(writes, kWindowSize));
         std::vector<std::uint64_t> copy;
-        {
-            std::lock_guard<gorun::Mutex> lk(lat_mtx_);
-            copy.assign(latencies_.begin(), latencies_.begin() + static_cast<std::ptrdiff_t>(lat_count_));
+        copy.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            copy.push_back(latencies_[i].load(std::memory_order_relaxed));
         }
 
         if (!copy.empty()) {
