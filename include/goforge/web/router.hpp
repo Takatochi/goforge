@@ -25,6 +25,7 @@
 #include "goforge/di.hpp"
 #include "goforge/http/http_types.hpp"
 #include "goforge/web/context.hpp"
+#include "goforge/web/extractors.hpp"
 
 namespace goforge::web {
 
@@ -57,43 +58,127 @@ inline std::string join_paths(std::string_view prefix, std::string_view suffix) 
     return out;
 }
 
-/// Adapts either `void(HttpContext&)` or DI-injected `void(HttpContext&, Deps...)` into a `HandlerFunc`.
+/// Helper invoking any callable or controller member function with mixed HTTP extractors,
+/// `HttpContext&`, and DI services, plus automatic serialization of non-`void` return types.
+template <typename ArgsTuple, typename Invoker, std::size_t... Is>
+void invoke_adapted_handler(HttpContext& ctx, Invoker&& invoker, std::index_sequence<Is...>) {
+    if constexpr (sizeof...(Is) == 0) {
+        using ReturnT = decltype(invoker());
+        if constexpr (std::is_void_v<ReturnT>) {
+            invoker();
+        } else {
+            auto result = invoker();
+            if (!ctx.is_aborted()) {
+                write_handler_result(ctx, std::move(result));
+            }
+        }
+        return;
+    } else {
+        // 1. Pre-extract all HTTP extractors (Body/Path/Query/Header) first so parse/validation failures
+        //    short-circuit cleanly before invoking the handler.
+        auto extract_slot = [&]<typename Param>() {
+            using Clean = std::remove_cvref_t<Param>;
+            if constexpr (is_http_extractor_v<Param>) {
+                return extract_http_arg<Clean>(ctx);
+            } else {
+                return std::true_type{};
+            }
+        };
+
+        auto slots = std::make_tuple(extract_slot.template operator()<std::tuple_element_t<Is, ArgsTuple>>()...);
+
+        bool all_ok = true;
+        auto check_slot = [&]<std::size_t I>() {
+            using Param = std::tuple_element_t<I, ArgsTuple>;
+            if constexpr (is_http_extractor_v<Param>) {
+                if (!std::get<I>(slots).has_value()) {
+                    all_ok = false;
+                }
+            }
+        };
+        (check_slot.template operator()<Is>(), ...);
+        if (!all_ok) {
+            return;
+        }
+
+        // 2. Materialize each argument (extracted HTTP value, HttpContext&, or DI service)
+        auto get_arg = [&]<std::size_t I>() -> decltype(auto) {
+            using Param = std::tuple_element_t<I, ArgsTuple>;
+            using Clean = std::remove_cvref_t<Param>;
+            if constexpr (is_http_extractor_v<Param>) {
+                return static_cast<Param>(*std::get<I>(slots));
+            } else if constexpr (std::is_same_v<Clean, HttpContext>) {
+                return static_cast<HttpContext&>(ctx);
+            } else if constexpr (std::is_same_v<Clean, ServiceScope>) {
+                return ctx.scope();
+            } else if constexpr (std::is_same_v<Clean, ServiceProvider>) {
+                return ctx.scope().root();
+            } else if constexpr (goforge::detail::IsSharedPtr<Clean>::value) {
+                using Elem = typename goforge::detail::IsSharedPtr<Clean>::element_type;
+                using RawT = std::remove_cv_t<Elem>;
+                return std::static_pointer_cast<Elem>(ctx.resolve_ptr<RawT>());
+            } else if constexpr (std::is_reference_v<Param>) {
+                return static_cast<Param>(ctx.resolve<Clean>());
+            } else {
+                return ctx.resolve<Clean>();
+            }
+        };
+
+        using ReturnT = decltype(invoker(get_arg.template operator()<Is>()...));
+        if constexpr (std::is_void_v<ReturnT>) {
+            invoker(get_arg.template operator()<Is>()...);
+        } else {
+            auto result = invoker(get_arg.template operator()<Is>()...);
+            if (!ctx.is_aborted()) {
+                write_handler_result(ctx, std::move(result));
+            }
+        }
+    }
+}
+
+template <typename Fn>
+constexpr bool is_direct_void_handler() noexcept {
+    if constexpr (std::is_invocable_v<Fn&, HttpContext&>) {
+        return std::is_void_v<std::invoke_result_t<Fn&, HttpContext&>>;
+    }
+    return false;
+}
+
+/// Adapts:
+/// 1. Classic `void(HttpContext&)` (zero-overhead fast path),
+/// 2. Classic DI `void(HttpContext&, Deps...)`,
+/// 3. Ergonomic Minimal API `R(Body<Dto>, Path<"id", int>, Query<"q">, MyService&, ...)`,
+/// 4. Zero-lambda Controller member pointers `&UserController::get_by_id` (resolved via DI!).
 template <typename Fn>
 HandlerFunc adapt_handler(Fn&& fn) {
     using DecayedFn = std::decay_t<Fn>;
-    if constexpr (std::is_invocable_r_v<void, DecayedFn&, HttpContext&>) {
+    if constexpr (std::is_member_function_pointer_v<DecayedFn>) {
+        using Traits = goforge::detail::FunctionTraits<DecayedFn>;
+        using ControllerT = typename Traits::class_type;
+        using ArgsTuple = typename Traits::args_tuple;
+        return [method = fn](HttpContext& ctx) {
+            auto& controller = ctx.resolve<ControllerT>();
+            auto caller = [&](auto&&... args) -> decltype(auto) {
+                return (controller.*method)(std::forward<decltype(args)>(args)...);
+            };
+            invoke_adapted_handler<ArgsTuple>(
+                ctx,
+                caller,
+                std::make_index_sequence<std::tuple_size_v<ArgsTuple>>{}
+            );
+        };
+    } else if constexpr (is_direct_void_handler<DecayedFn>()) {
         return HandlerFunc(std::forward<Fn>(fn));
     } else {
         using Traits = goforge::detail::FunctionTraits<DecayedFn>;
         using ArgsTuple = typename Traits::args_tuple;
-        static_assert(
-            std::tuple_size_v<ArgsTuple> >= 1 &&
-            std::is_same_v<std::remove_cvref_t<std::tuple_element_t<0, ArgsTuple>>, HttpContext>,
-            "Handler first parameter must be HttpContext& (e.g., [](HttpContext& c, MyService& svc) { ... })."
-        );
-
         auto holder = std::make_shared<DecayedFn>(std::forward<Fn>(fn));
         return [holder](HttpContext& ctx) {
-            auto call_with_deps = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                auto resolve_dep = [&]<typename Param>() -> decltype(auto) {
-                    using Clean = std::remove_cvref_t<Param>;
-                    if constexpr (std::is_same_v<Clean, ServiceScope>) {
-                        return ctx.scope();
-                    } else if constexpr (std::is_same_v<Clean, ServiceProvider>) {
-                        return ctx.scope().root();
-                    } else if constexpr (goforge::detail::IsSharedPtr<Clean>::value) {
-                        using Elem = typename goforge::detail::IsSharedPtr<Clean>::element_type;
-                        using RawT = std::remove_cv_t<Elem>;
-                        return std::static_pointer_cast<Elem>(ctx.resolve_ptr<RawT>());
-                    } else if constexpr (std::is_reference_v<Param>) {
-                        return static_cast<Param>(ctx.resolve<Clean>());
-                    } else {
-                        return ctx.resolve<Clean>();
-                    }
-                };
-                (*holder)(ctx, resolve_dep.template operator()<std::tuple_element_t<Is + 1, ArgsTuple>>()...);
-            };
-            call_with_deps(std::make_index_sequence<std::tuple_size_v<ArgsTuple> - 1>{});
+            invoke_adapted_handler<ArgsTuple>(
+                ctx,
+                *holder,
+                std::make_index_sequence<std::tuple_size_v<ArgsTuple>>{}
+            );
         };
     }
 }

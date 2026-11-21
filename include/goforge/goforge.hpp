@@ -6,12 +6,14 @@
  */
 
 #include "goforge/json.hpp"
+#include "goforge/query.hpp"
 #include "goforge/di.hpp"
 #include "goforge/lifecycle.hpp"
 #include "goforge/blocking_pool.hpp"
 #include "goforge/app.hpp"
 #include "goforge/http/http_types.hpp"
 #include "goforge/web/context.hpp"
+#include "goforge/web/extractors.hpp"
 #include "goforge/web/router.hpp"
 #include "goforge/web/middleware.hpp"
 #include "goforge/obs/logger.hpp"
@@ -21,3 +23,5 @@
 #include "goforge/net/asio_bridge.hpp"
 #include "goforge/http/http_server.hpp"
 #endif
+
+#include "goforge/web_app.hpp"

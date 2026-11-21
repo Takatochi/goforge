@@ -140,24 +140,28 @@ struct FunctionTraits<R(Args...)> {
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) const> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...)> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) const noexcept> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) noexcept> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
@@ -538,6 +542,13 @@ class ServiceCollection {
         return *this;
     }
 
+    template <typename D>
+    using CtorDepParam = std::conditional_t<
+        std::is_reference_v<D> || detail::IsSharedPtr<std::remove_cvref_t<D>>::value,
+        D,
+        D&
+    >;
+
     template <typename ServiceType, typename ImplType, typename... Deps>
     ServiceCollection& register_ctor(Lifetime lifetime) {
         static_assert(
@@ -546,9 +557,9 @@ class ServiceCollection {
         );
         return register_factory<ServiceType>(
             lifetime,
-            [](Deps... deps) -> std::shared_ptr<ServiceType> {
+            [](CtorDepParam<Deps>... deps) -> std::shared_ptr<ServiceType> {
                 return std::static_pointer_cast<ServiceType>(
-                    std::make_shared<ImplType>(std::forward<Deps>(deps)...)
+                    std::make_shared<ImplType>(std::forward<CtorDepParam<Deps>>(deps)...)
                 );
             }
         );
@@ -633,6 +644,13 @@ class ServiceCollection {
 
 public:
     ServiceCollection() = default;
+
+    /// Returns true if a descriptor for `T` has already been registered.
+    template <typename T>
+    [[nodiscard]] bool has() const noexcept {
+        using CleanT = std::remove_cv_t<T>;
+        return descriptors_.contains(std::type_index(typeid(CleanT)));
+    }
 
     /// Registers a pre-built instance `std::shared_ptr<T>` as a `Singleton`.
     template <typename T>

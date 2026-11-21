@@ -2,14 +2,15 @@
 
 /**
  * @file context.hpp
- * @brief Gin-style per-request `HttpContext` with path/query parameters, URL decoding,
- *        typed key-value store, `gorun::Context` cancellation, `ServiceScope` DI access,
- *        response builders, and middleware chain control (`next()`, `abort()`).
+ * @brief Gin-style per-request `HttpContext` with path/query parameters, URL
+ * decoding, typed key-value store, `gorun::Context` cancellation,
+ * `ServiceScope` DI access, response builders, and middleware chain control
+ * (`next()`, `abort()`).
  */
 
 #include <any>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -21,444 +22,482 @@
 #include <utility>
 #include <vector>
 
-#include "gorun/gorun.hpp"
 #include "goforge/di.hpp"
-#include "goforge/json.hpp"
 #include "goforge/http/http_types.hpp"
+#include "goforge/json.hpp"
+#include "gorun/gorun.hpp"
 
 namespace goforge::web {
 
 class HttpContext;
 
 /// Middleware and route handler signature (mirrors `gin.HandlerFunc`).
-using HandlerFunc = std::function<void(HttpContext&)>;
+using HandlerFunc = std::function<void(HttpContext &)>;
 
 namespace detail {
 
 inline int hex_digit_value(char c) noexcept {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return -1;
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F')
+    return 10 + (c - 'A');
+  return -1;
 }
 
-inline std::string url_decode(std::string_view input, bool plus_as_space = true) {
-    std::string out;
-    out.reserve(input.size());
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        char c = input[i];
-        if (plus_as_space && c == '+') {
-            out.push_back(' ');
-        } else if (c == '%' && i + 2 < input.size()) {
-            int hi = hex_digit_value(input[i + 1]);
-            int lo = hex_digit_value(input[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-            } else {
-                out.push_back(c);
-            }
-        } else {
-            out.push_back(c);
-        }
+inline std::string url_decode(std::string_view input,
+                              bool plus_as_space = true) {
+  std::string out;
+  out.reserve(input.size());
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    char c = input[i];
+    if (plus_as_space && c == '+') {
+      out.push_back(' ');
+    } else if (c == '%' && i + 2 < input.size()) {
+      int hi = hex_digit_value(input[i + 1]);
+      int lo = hex_digit_value(input[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out.push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+      } else {
+        out.push_back(c);
+      }
+    } else {
+      out.push_back(c);
     }
-    return out;
+  }
+  return out;
 }
 
-inline std::unordered_map<std::string, std::string> parse_query_string(std::string_view raw) {
-    std::unordered_map<std::string, std::string> result;
-    std::size_t pos = 0;
-    while (pos < raw.size()) {
-        auto amp = raw.find('&', pos);
-        std::string_view pair = (amp == std::string_view::npos)
-            ? raw.substr(pos)
-            : raw.substr(pos, amp - pos);
-        pos = (amp == std::string_view::npos) ? raw.size() : amp + 1;
+inline std::unordered_map<std::string, std::string>
+parse_query_string(std::string_view raw) {
+  std::unordered_map<std::string, std::string> result;
+  std::size_t pos = 0;
+  while (pos < raw.size()) {
+    auto amp = raw.find('&', pos);
+    std::string_view pair = (amp == std::string_view::npos)
+                                ? raw.substr(pos)
+                                : raw.substr(pos, amp - pos);
+    pos = (amp == std::string_view::npos) ? raw.size() : amp + 1;
 
-        if (pair.empty()) continue;
-        auto eq = pair.find('=');
-        if (eq == std::string_view::npos) {
-            result.insert_or_assign(url_decode(pair), std::string{});
-        } else {
-            result.insert_or_assign(
-                url_decode(pair.substr(0, eq)),
-                url_decode(pair.substr(eq + 1))
-            );
-        }
+    if (pair.empty())
+      continue;
+    auto eq = pair.find('=');
+    if (eq == std::string_view::npos) {
+      result.insert_or_assign(url_decode(pair), std::string{});
+    } else {
+      result.insert_or_assign(url_decode(pair.substr(0, eq)),
+                              url_decode(pair.substr(eq + 1)));
     }
-    return result;
+  }
+  return result;
 }
 
 template <typename T>
 std::optional<T> parse_number(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    T value{};
-    const char* first = sv.data();
-    const char* last = first + sv.size();
-    auto [ptr, ec] = std::from_chars(first, last, value);
-    if (ec != std::errc{} || ptr != last) {
-        return std::nullopt;
-    }
-    return value;
+  if (sv.empty())
+    return std::nullopt;
+  T value{};
+  const char *first = sv.data();
+  const char *last = first + sv.size();
+  auto [ptr, ec] = std::from_chars(first, last, value);
+  if (ec != std::errc{} || ptr != last) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 } // namespace detail
 
 /**
- * @brief Sleeps cooperatively inside a green routine until `duration` elapses or `ctx` is canceled.
- * @return `true` if the full duration elapsed, `false` if canceled by `ctx` (e.g., Timeout middleware).
+ * @brief Sleeps cooperatively inside a green routine until `duration` elapses
+ * or `ctx` is canceled.
+ * @return `true` if the full duration elapsed, `false` if canceled by `ctx`
+ * (e.g., Timeout middleware).
  */
-inline bool sleep_with_context(gorun::Context ctx, std::chrono::milliseconds duration) {
-    if (ctx.is_canceled()) return false;
-    bool completed = false;
-    gorun::select(
-        gorun::on_timeout(duration, [&]() { completed = true; }),
-        ctx.on_done([&]() { completed = false; })
-    );
-    return completed;
+inline bool sleep_with_context(gorun::Context ctx,
+                               std::chrono::milliseconds duration) {
+  if (ctx.is_canceled())
+    return false;
+  bool completed = false;
+  gorun::select(gorun::on_timeout(duration, [&]() { completed = true; }),
+                ctx.on_done([&]() { completed = false; }));
+  return completed;
 }
 
 /**
  * @class HttpContext
- * @brief Per-request execution context passed through the middleware chain and route handler.
+ * @brief Per-request execution context passed through the middleware chain and
+ * route handler.
  */
 class HttpContext {
-    const http::HttpRequest* req_;
-    http::HttpResponse resp_;
-    gorun::Context go_ctx_;
-    ServiceScope* scope_{nullptr};
+  const http::HttpRequest *req_;
+  http::HttpResponse resp_;
+  gorun::Context go_ctx_;
+  ServiceScope *scope_{nullptr};
 
-    std::unordered_map<std::string, std::string> params_;
-    mutable bool query_parsed_{false};
-    mutable std::unordered_map<std::string, std::string> query_params_;
-    std::unordered_map<std::string, std::any> values_;
+  std::unordered_map<std::string, std::string> params_;
+  mutable bool query_parsed_{false};
+  mutable std::unordered_map<std::string, std::string> query_params_;
+  std::unordered_map<std::string, std::any> values_;
 
-    const std::vector<HandlerFunc>* global_handlers_{nullptr};
-    const std::vector<HandlerFunc>* route_handlers_{nullptr};
-    std::vector<HandlerFunc> owned_route_handlers_;
-    std::size_t handler_index_{0};
-    bool aborted_{false};
-    bool written_{false};
+  const std::vector<HandlerFunc> *global_handlers_{nullptr};
+  const std::vector<HandlerFunc> *route_handlers_{nullptr};
+  std::vector<HandlerFunc> owned_route_handlers_;
+  std::size_t handler_index_{0};
+  bool aborted_{false};
+  bool written_{false};
 
-    void ensure_query_parsed() const {
-        if (!query_parsed_) {
-            query_params_ = detail::parse_query_string(req_->raw_query);
-            query_parsed_ = true;
-        }
+  void ensure_query_parsed() const {
+    if (!query_parsed_) {
+      query_params_ = detail::parse_query_string(req_->raw_query);
+      query_parsed_ = true;
     }
+  }
 
 public:
-    HttpContext(const http::HttpRequest& req,
-                gorun::Context go_ctx,
-                ServiceScope* scope = nullptr)
-        : req_(&req)
-        , go_ctx_(std::move(go_ctx))
-        , scope_(scope) {}
+  HttpContext(const http::HttpRequest &req, gorun::Context go_ctx,
+              ServiceScope *scope = nullptr)
+      : req_(&req), go_ctx_(std::move(go_ctx)), scope_(scope) {}
 
-    HttpContext(const HttpContext&) = delete;
-    HttpContext& operator=(const HttpContext&) = delete;
+  HttpContext(const HttpContext &) = delete;
+  HttpContext &operator=(const HttpContext &) = delete;
 
-    // ---- Request inspection ----
-    [[nodiscard]] const http::HttpRequest& request() const noexcept { return *req_; }
-    [[nodiscard]] const std::string& method() const noexcept { return req_->method; }
-    [[nodiscard]] const std::string& path() const noexcept { return req_->path; }
-    [[nodiscard]] const std::string& raw_query() const noexcept { return req_->raw_query; }
-    [[nodiscard]] const std::string& body() const noexcept { return req_->body; }
-    [[nodiscard]] const std::string& remote_addr() const noexcept { return req_->remote_addr; }
+  // ---- Request inspection ----
+  [[nodiscard]] const http::HttpRequest &request() const noexcept {
+    return *req_;
+  }
+  [[nodiscard]] const std::string &method() const noexcept {
+    return req_->method;
+  }
+  [[nodiscard]] const std::string &path() const noexcept { return req_->path; }
+  [[nodiscard]] const std::string &raw_query() const noexcept {
+    return req_->raw_query;
+  }
+  [[nodiscard]] const std::string &body() const noexcept { return req_->body; }
+  [[nodiscard]] const std::string &remote_addr() const noexcept {
+    return req_->remote_addr;
+  }
 
-    [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const {
-        return req_->headers.get(name);
+  [[nodiscard]] std::optional<std::string_view>
+  header(std::string_view name) const {
+    return req_->headers.get(name);
+  }
+
+  [[nodiscard]] std::string header_or(std::string_view name,
+                                      std::string_view fallback = "") const {
+    return req_->headers.get_or(name, fallback);
+  }
+
+  // ---- Path parameters (:id, *filepath) ----
+  void set_params(std::unordered_map<std::string, std::string> params) {
+    params_ = std::move(params);
+  }
+
+  [[nodiscard]] std::optional<std::string_view>
+  param(std::string_view key) const {
+    auto it = params_.find(std::string(key));
+    if (it == params_.end())
+      return std::nullopt;
+    return std::string_view(it->second);
+  }
+
+  [[nodiscard]] std::string param_or(std::string_view key,
+                                     std::string_view fallback = "") const {
+    auto v = param(key);
+    return v ? std::string(*v) : std::string(fallback);
+  }
+
+  template <typename T>
+    requires std::is_arithmetic_v<T>
+  [[nodiscard]] std::optional<T> param_as(std::string_view key) const noexcept {
+    auto v = param(key);
+    if (!v)
+      return std::nullopt;
+    return detail::parse_number<T>(*v);
+  }
+
+  // ---- Query parameters (?key=val&...) ----
+  [[nodiscard]] std::optional<std::string_view>
+  query(std::string_view key) const {
+    ensure_query_parsed();
+    auto it = query_params_.find(std::string(key));
+    if (it == query_params_.end())
+      return std::nullopt;
+    return std::string_view(it->second);
+  }
+
+  [[nodiscard]] std::string query_or(std::string_view key,
+                                     std::string_view fallback = "") const {
+    auto v = query(key);
+    return v ? std::string(*v) : std::string(fallback);
+  }
+
+  template <typename T>
+    requires std::is_arithmetic_v<T>
+  [[nodiscard]] std::optional<T> query_as(std::string_view key) const noexcept {
+    auto v = query(key);
+    if (!v)
+      return std::nullopt;
+    return detail::parse_number<T>(*v);
+  }
+
+  // ---- Per-request typed key-value bag (Gin-style Set/Get) ----
+  template <typename T> void set(std::string key, T &&value) {
+    values_.insert_or_assign(std::move(key), std::forward<T>(value));
+  }
+
+  template <typename T>
+  [[nodiscard]] std::optional<T> get(const std::string &key) const {
+    auto it = values_.find(key);
+    if (it == values_.end())
+      return std::nullopt;
+    if (const T *ptr = std::any_cast<T>(&it->second)) {
+      return *ptr;
     }
+    return std::nullopt;
+  }
 
-    [[nodiscard]] std::string header_or(std::string_view name, std::string_view fallback = "") const {
-        return req_->headers.get_or(name, fallback);
+  [[nodiscard]] bool has_value(const std::string &key) const {
+    return values_.contains(key);
+  }
+
+  // ---- gorun::Context cancellation & timeouts ----
+  [[nodiscard]] gorun::Context go_ctx() const noexcept { return go_ctx_; }
+
+  void set_go_ctx(gorun::Context ctx) noexcept { go_ctx_ = std::move(ctx); }
+
+  [[nodiscard]] bool is_canceled() const noexcept {
+    return go_ctx_.is_canceled();
+  }
+
+  // ---- DI ServiceScope integration ----
+  [[nodiscard]] bool has_scope() const noexcept { return scope_ != nullptr; }
+
+  [[nodiscard]] ServiceScope &scope() {
+    if (!scope_) {
+      throw ScopeRequiredError(
+          "HttpContext has no active DI ServiceScope attached.");
     }
+    return *scope_;
+  }
 
-    // ---- Path parameters (:id, *filepath) ----
-    void set_params(std::unordered_map<std::string, std::string> params) {
-        params_ = std::move(params);
+  template <typename T> [[nodiscard]] T &resolve() {
+    return scope().resolve<T>();
+  }
+
+  template <typename T>
+  [[nodiscard]] std::shared_ptr<std::remove_cv_t<T>> resolve_ptr() {
+    return scope().resolve_ptr<T>();
+  }
+
+  template <typename Fn> decltype(auto) invoke(Fn &&fn) {
+    return scope().invoke(std::forward<Fn>(fn));
+  }
+
+  // ---- Typed JSON Request Binding & Validation (Gin ShouldBindJSON style)
+  // ----
+
+  /// Parses the raw HTTP body into a generic `goforge::Json` value without
+  /// writing an error response.
+  [[nodiscard]] BindResult<Json> try_bind_json_value() const {
+    return parse_json_body(req_->body);
+  }
+
+  /// Parses the raw HTTP body into a `goforge::Json` value; automatically
+  /// aborts with `400` on parse error.
+  [[nodiscard]] std::optional<Json> bind_json_value() {
+    auto res = try_bind_json_value();
+    if (!res.ok()) {
+      abort_with_error(res.http_status, res.error_code, res.message);
+      return std::nullopt;
     }
+    return std::move(res.value);
+  }
 
-    [[nodiscard]] std::optional<std::string_view> param(std::string_view key) const {
-        auto it = params_.find(std::string(key));
-        if (it == params_.end()) return std::nullopt;
-        return std::string_view(it->second);
+  /**
+   * @brief Parses and validates the JSON body into DTO `T` without writing an
+   * error response. Checks JSON syntax/schema (`400`) and calls
+   * `dto.validate()` (`422`) if defined.
+   */
+  template <typename T> [[nodiscard]] BindResult<T> try_bind_json() const {
+    return parse_and_validate_json<T>(req_->body);
+  }
+
+  /**
+   * @brief Parses and validates the JSON body into DTO `T` (mirrors Gin's
+   * `ShouldBindJSON`). On failure, automatically writes a structured JSON error
+   * (`400` or `422`), aborts the middleware chain, and returns `std::nullopt`.
+   */
+  template <typename T> [[nodiscard]] std::optional<T> bind_json() {
+    auto res = try_bind_json<T>();
+    if (!res.ok()) {
+      abort_with_error(res.http_status, res.error_code, res.message);
+      return std::nullopt;
     }
+    return std::move(res.value);
+  }
 
-    [[nodiscard]] std::string param_or(std::string_view key, std::string_view fallback = "") const {
-        auto v = param(key);
-        return v ? std::string(*v) : std::string(fallback);
+  // ---- Response builders ----
+  HttpContext &status(int code) {
+    resp_.status = code;
+    written_ = true;
+    return *this;
+  }
+
+  HttpContext &set_header(std::string_view name, std::string value) {
+    resp_.headers.set(name, std::move(value));
+    return *this;
+  }
+
+  void data(int code, std::string_view content_type, std::string body) {
+    resp_.status = code;
+    resp_.body = std::move(body);
+    resp_.headers.set("Content-Type", std::string(content_type));
+    written_ = true;
+  }
+
+  void text(int code, std::string body) {
+    data(code, "text/plain; charset=utf-8", std::move(body));
+  }
+
+  /// Writes a pre-serialized raw JSON string response.
+  void json_raw(int code, std::string raw_json_body) {
+    resp_.status = code;
+    resp_.body = std::move(raw_json_body);
+    resp_.headers.set("Content-Type", "application/json; charset=utf-8");
+    written_ = true;
+  }
+
+  /// Writes a pre-serialized JSON string (backwards-compatible overload).
+  void json(int code, std::string raw_json_body) {
+    json_raw(code, std::move(raw_json_body));
+  }
+
+  /// Exact-match overload for raw JSON string literals (prevents ambiguity with
+  /// `nlohmann::json(const char*)`).
+  void json(int code, const char *raw_json_body) {
+    json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+  }
+
+  /// Serializes a `goforge::Json` / `goforge::H` value to JSON and sets
+  /// `Content-Type: application/json`.
+  void json(int code, const Json &value) { json_raw(code, value.dump()); }
+
+  /// Serializes any DTO (`GOFORGE_JSON_DTO`), `std::vector<Dto>`, `std::map`,
+  /// etc. directly to JSON!
+  template <typename T>
+    requires(!std::convertible_to<T, std::string_view> &&
+             !std::same_as<std::decay_t<T>, Json>)
+  void json(int code, const T &dto) {
+    json_raw(code, Json(dto).dump());
+  }
+
+  /// Writes a standardized structured JSON error: `{"error": error_code,
+  /// "message": message}`.
+  void error(int code, std::string_view error_code,
+             std::string_view message = "") {
+    json(code, make_error_json(error_code, message));
+  }
+
+  void no_content() {
+    resp_.status = 204;
+    resp_.body.clear();
+    written_ = true;
+  }
+
+  [[nodiscard]] bool is_written() const noexcept { return written_; }
+  [[nodiscard]] http::HttpResponse &response() noexcept { return resp_; }
+  [[nodiscard]] const http::HttpResponse &response() const noexcept {
+    return resp_;
+  }
+
+  // ---- Middleware chain execution (zero-copy view over global + route handler
+  // chains!) ----
+  void set_handler_views(const std::vector<HandlerFunc> *global_mws,
+                         const std::vector<HandlerFunc> *route_mws) noexcept {
+    global_handlers_ = global_mws;
+    route_handlers_ = route_mws;
+    owned_route_handlers_.clear();
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void set_handler_with_fallback(const std::vector<HandlerFunc> *global_mws,
+                                 HandlerFunc fallback_endpoint) {
+    global_handlers_ = global_mws;
+    owned_route_handlers_.clear();
+    owned_route_handlers_.push_back(std::move(fallback_endpoint));
+    route_handlers_ = &owned_route_handlers_;
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void set_handlers(std::vector<HandlerFunc> chain) {
+    global_handlers_ = nullptr;
+    owned_route_handlers_ = std::move(chain);
+    route_handlers_ = &owned_route_handlers_;
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void next() {
+    const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+    const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+    const std::size_t total = g_sz + r_sz;
+    while (handler_index_ < total && !aborted_) {
+      const std::size_t idx = handler_index_++;
+      const HandlerFunc &fn = (idx < g_sz) ? (*global_handlers_)[idx]
+                                           : (*route_handlers_)[idx - g_sz];
+      if (fn) {
+        fn(*this);
+      }
     }
-
-    template <typename T>
-        requires std::is_arithmetic_v<T>
-    [[nodiscard]] std::optional<T> param_as(std::string_view key) const noexcept {
-        auto v = param(key);
-        if (!v) return std::nullopt;
-        return detail::parse_number<T>(*v);
-    }
-
-    // ---- Query parameters (?key=val&...) ----
-    [[nodiscard]] std::optional<std::string_view> query(std::string_view key) const {
-        ensure_query_parsed();
-        auto it = query_params_.find(std::string(key));
-        if (it == query_params_.end()) return std::nullopt;
-        return std::string_view(it->second);
-    }
-
-    [[nodiscard]] std::string query_or(std::string_view key, std::string_view fallback = "") const {
-        auto v = query(key);
-        return v ? std::string(*v) : std::string(fallback);
-    }
-
-    template <typename T>
-        requires std::is_arithmetic_v<T>
-    [[nodiscard]] std::optional<T> query_as(std::string_view key) const noexcept {
-        auto v = query(key);
-        if (!v) return std::nullopt;
-        return detail::parse_number<T>(*v);
-    }
-
-    // ---- Per-request typed key-value bag (Gin-style Set/Get) ----
-    template <typename T>
-    void set(std::string key, T&& value) {
-        values_.insert_or_assign(std::move(key), std::forward<T>(value));
-    }
-
-    template <typename T>
-    [[nodiscard]] std::optional<T> get(const std::string& key) const {
-        auto it = values_.find(key);
-        if (it == values_.end()) return std::nullopt;
-        if (const T* ptr = std::any_cast<T>(&it->second)) {
-            return *ptr;
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] bool has_value(const std::string& key) const {
-        return values_.contains(key);
-    }
-
-    // ---- gorun::Context cancellation & timeouts ----
-    [[nodiscard]] gorun::Context go_ctx() const noexcept { return go_ctx_; }
-
-    void set_go_ctx(gorun::Context ctx) noexcept { go_ctx_ = std::move(ctx); }
-
-    [[nodiscard]] bool is_canceled() const noexcept { return go_ctx_.is_canceled(); }
-
-    // ---- DI ServiceScope integration ----
-    [[nodiscard]] bool has_scope() const noexcept { return scope_ != nullptr; }
-
-    [[nodiscard]] ServiceScope& scope() {
-        if (!scope_) {
-            throw ScopeRequiredError("HttpContext has no active DI ServiceScope attached.");
-        }
-        return *scope_;
-    }
-
-    template <typename T>
-    [[nodiscard]] T& resolve() {
-        return scope().resolve<T>();
-    }
-
-    template <typename T>
-    [[nodiscard]] std::shared_ptr<std::remove_cv_t<T>> resolve_ptr() {
-        return scope().resolve_ptr<T>();
-    }
-
-    template <typename Fn>
-    decltype(auto) invoke(Fn&& fn) {
-        return scope().invoke(std::forward<Fn>(fn));
-    }
-
-    // ---- Typed JSON Request Binding & Validation (Gin ShouldBindJSON style) ----
-
-    /// Parses the raw HTTP body into a generic `goforge::Json` value without writing an error response.
-    [[nodiscard]] BindResult<Json> try_bind_json_value() const {
-        return parse_json_body(req_->body);
-    }
-
-    /// Parses the raw HTTP body into a `goforge::Json` value; automatically aborts with `400` on parse error.
-    [[nodiscard]] std::optional<Json> bind_json_value() {
-        auto res = try_bind_json_value();
-        if (!res.ok()) {
-            abort_with_error(res.http_status, res.error_code, res.message);
-            return std::nullopt;
-        }
-        return std::move(res.value);
-    }
-
-    /**
-     * @brief Parses and validates the JSON body into DTO `T` without writing an error response.
-     *        Checks JSON syntax/schema (`400`) and calls `dto.validate()` (`422`) if defined.
-     */
-    template <typename T>
-    [[nodiscard]] BindResult<T> try_bind_json() const {
-        return parse_and_validate_json<T>(req_->body);
-    }
-
-    /**
-     * @brief Parses and validates the JSON body into DTO `T` (mirrors Gin's `ShouldBindJSON`).
-     *        On failure, automatically writes a structured JSON error (`400` or `422`), aborts the
-     *        middleware chain, and returns `std::nullopt`.
-     */
-    template <typename T>
-    [[nodiscard]] std::optional<T> bind_json() {
-        auto res = try_bind_json<T>();
-        if (!res.ok()) {
-            abort_with_error(res.http_status, res.error_code, res.message);
-            return std::nullopt;
-        }
-        return std::move(res.value);
-    }
-
-    // ---- Response builders ----
-    HttpContext& status(int code) {
-        resp_.status = code;
-        written_ = true;
-        return *this;
-    }
-
-    HttpContext& set_header(std::string_view name, std::string value) {
-        resp_.headers.set(name, std::move(value));
-        return *this;
-    }
-
-    void text(int code, std::string body) {
-        resp_.status = code;
-        resp_.body = std::move(body);
-        resp_.headers.set("Content-Type", "text/plain; charset=utf-8");
-        written_ = true;
-    }
-
-    /// Writes a pre-serialized raw JSON string response.
-    void json_raw(int code, std::string raw_json_body) {
-        resp_.status = code;
-        resp_.body = std::move(raw_json_body);
-        resp_.headers.set("Content-Type", "application/json; charset=utf-8");
-        written_ = true;
-    }
-
-    /// Writes a pre-serialized JSON string (backwards-compatible overload).
-    void json(int code, std::string raw_json_body) {
-        json_raw(code, std::move(raw_json_body));
-    }
-
-    /// Exact-match overload for raw JSON string literals (prevents ambiguity with `nlohmann::json(const char*)`).
-    void json(int code, const char* raw_json_body) {
-        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
-    }
-
-    /// Serializes a `goforge::Json` / `goforge::H` value to JSON and sets `Content-Type: application/json`.
-    void json(int code, const Json& value) {
-        json_raw(code, value.dump());
-    }
-
-    /// Serializes any DTO (`GOFORGE_JSON_DTO`), `std::vector<Dto>`, `std::map`, etc. directly to JSON!
-    template <typename T>
-        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
-    void json(int code, const T& dto) {
-        json_raw(code, Json(dto).dump());
-    }
-
-    /// Writes a standardized structured JSON error: `{"error": error_code, "message": message}`.
-    void error(int code, std::string_view error_code, std::string_view message = "") {
-        json(code, make_error_json(error_code, message));
-    }
-
-    void no_content() {
-        resp_.status = 204;
-        resp_.body.clear();
-        written_ = true;
-    }
-
-    [[nodiscard]] bool is_written() const noexcept { return written_; }
-    [[nodiscard]] http::HttpResponse& response() noexcept { return resp_; }
-    [[nodiscard]] const http::HttpResponse& response() const noexcept { return resp_; }
-
-    // ---- Middleware chain execution (zero-copy view over global + route handler chains!) ----
-    void set_handler_views(const std::vector<HandlerFunc>* global_mws,
-                           const std::vector<HandlerFunc>* route_mws) noexcept {
-        global_handlers_ = global_mws;
-        route_handlers_ = route_mws;
-        owned_route_handlers_.clear();
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void set_handler_with_fallback(const std::vector<HandlerFunc>* global_mws,
-                                   HandlerFunc fallback_endpoint) {
-        global_handlers_ = global_mws;
-        owned_route_handlers_.clear();
-        owned_route_handlers_.push_back(std::move(fallback_endpoint));
-        route_handlers_ = &owned_route_handlers_;
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void set_handlers(std::vector<HandlerFunc> chain) {
-        global_handlers_ = nullptr;
-        owned_route_handlers_ = std::move(chain);
-        route_handlers_ = &owned_route_handlers_;
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void next() {
-        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
-        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
-        const std::size_t total = g_sz + r_sz;
-        while (handler_index_ < total && !aborted_) {
-            const std::size_t idx = handler_index_++;
-            const HandlerFunc& fn = (idx < g_sz)
-                ? (*global_handlers_)[idx]
-                : (*route_handlers_)[idx - g_sz];
-            if (fn) {
-                fn(*this);
-            }
-        }
-    }
+}
 
     void abort() noexcept {
-        aborted_ = true;
-        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
-        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
-        handler_index_ = g_sz + r_sz;
-    }
+  aborted_ = true;
+  const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+  const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+  handler_index_ = g_sz + r_sz;
+}
 
-    void abort_with_text(int code, std::string msg) {
-        text(code, std::move(msg));
-        abort();
-    }
+void abort_with_text(int code, std::string msg) {
+  text(code, std::move(msg));
+  abort();
+}
 
-    void abort_with_json(int code, std::string raw_json_body) {
-        json_raw(code, std::move(raw_json_body));
-        abort();
-    }
+void abort_with_json(int code, std::string raw_json_body) {
+  json_raw(code, std::move(raw_json_body));
+  abort();
+}
 
-    void abort_with_json(int code, const char* raw_json_body) {
-        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
-        abort();
-    }
+void abort_with_json(int code, const char *raw_json_body) {
+  json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+  abort();
+}
 
-    void abort_with_json(int code, const Json& value) {
-        json(code, value);
-        abort();
-    }
+void abort_with_json(int code, const Json &value) {
+  json(code, value);
+  abort();
+}
 
-    template <typename T>
-        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
-    void abort_with_json(int code, const T& dto) {
-        json(code, dto);
-        abort();
-    }
+template <typename T>
+  requires(!std::convertible_to<T, std::string_view> &&
+           !std::same_as<std::decay_t<T>, Json>)
+void abort_with_json(int code, const T &dto) {
+  json(code, dto);
+  abort();
+}
 
-    void abort_with_error(int code, std::string_view error_code, std::string_view message = "") {
-        error(code, error_code, message);
-        abort();
-    }
+void abort_with_error(int code, std::string_view error_code,
+                      std::string_view message = "") {
+  error(code, error_code, message);
+  abort();
+}
 
-    [[nodiscard]] bool is_aborted() const noexcept { return aborted_; }
+[[nodiscard]] bool is_aborted() const noexcept { return aborted_; }
 };
 
 } // namespace goforge::web
