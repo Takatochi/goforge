@@ -121,6 +121,10 @@ if(GOFORGE_BUILD_TESTS)
     target_link_libraries(goforge_stage5_json_tests PRIVATE goforge::goforge)
     add_test(NAME goforge_stage5_json_tests COMMAND goforge_stage5_json_tests)
 
+    add_executable(goforge_stage6_ergonomics_query_tests tests/test_stage6_ergonomics_query.cpp)
+    target_link_libraries(goforge_stage6_ergonomics_query_tests PRIVATE goforge::goforge)
+    add_test(NAME goforge_stage6_ergonomics_query_tests COMMAND goforge_stage6_ergonomics_query_tests)
+
     if(GOFORGE_ENABLE_ASIO)
         add_executable(goforge_stage2_tests tests/test_stage2_http.cpp)
         target_link_libraries(goforge_stage2_tests PRIVATE goforge::goforge)
@@ -146,6 +150,9 @@ if(GOFORGE_BUILD_EXAMPLES)
 
         add_executable(goforge_example_03_rest examples/03_rest_api_gin_fx.cpp)
         target_link_libraries(goforge_example_03_rest PRIVATE goforge::goforge)
+
+        add_executable(goforge_example_04_ergonomic examples/04_ergonomic_webapp_and_query.cpp)
+        target_link_libraries(goforge_example_04_ergonomic PRIVATE goforge::goforge)
     endif()
 endif()
 
