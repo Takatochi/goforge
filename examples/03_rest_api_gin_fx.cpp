@@ -165,17 +165,15 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    goforge::net::AsioExecutor client_io(1);
     auto call = [&](std::string_view raw_req) {
-        goforge::net::AsyncTcpSocket sock(client_io.context());
-        if (sock.connect("127.0.0.1", server.port())) return;
+        auto sock = gorun::net::TcpStream::connect("127.0.0.1", server.port());
         (void)sock.write_all(raw_req);
         std::string resp;
         char buf[2048];
         for (;;) {
-            auto [n, ec] = sock.read_some(buf, sizeof(buf));
-            if (ec || n == 0) break;
-            resp.append(buf, n);
+            auto rd = sock.read(buf, sizeof(buf));
+            if (!rd.ok() || rd.eof()) break;
+            resp.append(buf, static_cast<std::size_t>(rd.bytes));
         }
         auto sep = resp.find("\r\n\r\n");
         std::string body = (sep != std::string::npos) ? resp.substr(sep + 4) : resp;

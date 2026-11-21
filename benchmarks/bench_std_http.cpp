@@ -13,21 +13,77 @@
 #include <thread>
 #include <vector>
 
-#include <asio.hpp>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include "goforge/http/http_types.hpp"
 
 using namespace std::chrono_literals;
 
 namespace {
 
-bool read_sync_response(asio::ip::tcp::socket& sock, std::string& buf) {
+#if defined(_WIN32)
+using RawSock = SOCKET;
+inline constexpr RawSock kInvalidSock = INVALID_SOCKET;
+inline void close_raw(RawSock s) { if (s != kInvalidSock) ::closesocket(s); }
+struct WsaGuard {
+    WsaGuard() { WSADATA w{}; ::WSAStartup(MAKEWORD(2, 2), &w); }
+    ~WsaGuard() { ::WSACleanup(); }
+};
+#else
+using RawSock = int;
+inline constexpr RawSock kInvalidSock = -1;
+inline void close_raw(RawSock s) { if (s >= 0) ::close(s); }
+struct WsaGuard {};
+#endif
+
+RawSock connect_sync(std::uint16_t port) {
+    RawSock s = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (s == kInvalidSock) return kInvalidSock;
+    int nodelay = 1;
+    ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close_raw(s);
+        return kInvalidSock;
+    }
+    return s;
+}
+
+bool send_all(RawSock s, std::string_view data) {
+    std::size_t off = 0;
+    while (off < data.size()) {
+        auto n = ::send(s, data.data() + off, static_cast<int>(data.size() - off), 0);
+        if (n <= 0) return false;
+        off += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+bool read_sync_response(RawSock sock, std::string& buf) {
     char chunk[4096];
-    std::error_code ec;
     std::size_t sep = std::string::npos;
     while ((sep = buf.find("\r\n\r\n")) == std::string::npos) {
-        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-        if (ec || n == 0) return false;
-        buf.append(chunk, n);
+        auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+        if (n <= 0) return false;
+        buf.append(chunk, static_cast<std::size_t>(n));
     }
 
     std::size_t content_length = 0;
@@ -43,9 +99,9 @@ bool read_sync_response(asio::ip::tcp::socket& sock, std::string& buf) {
 
     const std::size_t total = sep + 4 + content_length;
     while (buf.size() < total) {
-        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-        if (ec || n == 0) return false;
-        buf.append(chunk, n);
+        auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+        if (n <= 0) return false;
+        buf.append(chunk, static_cast<std::size_t>(n));
     }
     buf.erase(0, total);
     return true;
@@ -58,9 +114,9 @@ std::uint64_t pct(const std::vector<std::uint64_t>& sorted, double q) {
     return sorted[idx];
 }
 
-void handle_sync_connection(asio::ip::tcp::socket sock) {
-    std::error_code ec;
-    sock.set_option(asio::ip::tcp::no_delay(true), ec);
+void handle_sync_connection(RawSock sock) {
+    int nodelay = 1;
+    ::setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
     std::string buf;
     buf.reserve(4096);
@@ -71,17 +127,17 @@ void handle_sync_connection(asio::ip::tcp::socket sock) {
         for (;;) {
             parsed = goforge::http::parse_http_headers(buf, 16 * 1024, 1024 * 1024);
             if (parsed.status != goforge::http::ParseStatus::Incomplete) break;
-            std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-            if (ec || n == 0) return;
-            buf.append(chunk, n);
+            auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+            if (n <= 0) { close_raw(sock); return; }
+            buf.append(chunk, static_cast<std::size_t>(n));
         }
-        if (parsed.status != goforge::http::ParseStatus::Ok) return;
+        if (parsed.status != goforge::http::ParseStatus::Ok) { close_raw(sock); return; }
 
         const std::size_t total = parsed.header_end_pos + parsed.content_length;
         while (buf.size() < total) {
-            std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-            if (ec || n == 0) return;
-            buf.append(chunk, n);
+            auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+            if (n <= 0) { close_raw(sock); return; }
+            buf.append(chunk, static_cast<std::size_t>(n));
         }
         auto req = std::move(parsed.request);
         buf.erase(0, total);
@@ -96,18 +152,34 @@ void handle_sync_connection(asio::ip::tcp::socket sock) {
         }
 
         std::string wire = resp.serialize(ka);
-        asio::write(sock, asio::buffer(wire), ec);
-        if (ec || !ka) return;
+        if (!send_all(sock, wire) || !ka) { close_raw(sock); return; }
     }
 }
 
 } // namespace
 
 int main() {
+    WsaGuard wsa;
     std::cout << std::unitbuf;
-    asio::io_context io;
-    asio::ip::tcp::acceptor acceptor(io, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
-    const std::uint16_t port = acceptor.local_endpoint().port();
+
+    RawSock srv = ::socket(AF_INET, SOCK_STREAM, 0);
+    int reuse = 1;
+    ::setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    ::bind(srv, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+    ::listen(srv, 512);
+
+    sockaddr_in actual{};
+#if defined(_WIN32)
+    int alen = sizeof(actual);
+#else
+    socklen_t alen = sizeof(actual);
+#endif
+    ::getsockname(srv, reinterpret_cast<sockaddr*>(&actual), &alen);
+    const std::uint16_t port = ntohs(actual.sin_port);
 
     std::atomic<bool> stop_flag{false};
     std::atomic<int> os_threads_spawned{0};
@@ -116,20 +188,16 @@ int main() {
 
     std::jthread accept_thread([&]() {
         while (!stop_flag.load(std::memory_order_acquire)) {
-            std::error_code ec;
-            asio::ip::tcp::socket peer(io);
-            acceptor.accept(peer, ec);
-            if (ec) break;
+            RawSock peer = ::accept(srv, nullptr, nullptr);
+            if (peer == kInvalidSock) break;
             os_threads_spawned.fetch_add(1, std::memory_order_relaxed);
             std::lock_guard lk(threads_mtx);
-            conn_threads.emplace_back([s = std::move(peer)]() mutable {
-                handle_sync_connection(std::move(s));
-            });
+            conn_threads.emplace_back([peer]() { handle_sync_connection(peer); });
         }
     });
 
     std::cout << "====================================================================================================\n";
-    std::cout << "  Standard C++20 Thread-Per-Connection (std::jthread + blocking sockets) HTTP/1.1 Benchmark Suite\n";
+    std::cout << "  Standard C++20 Thread-Per-Connection (std::jthread + raw OS sockets) HTTP/1.1 Benchmark Suite\n";
     std::cout << "====================================================================================================\n";
 
     // Workload 1: 32 Keep-Alive clients x 500 requests = 16,000 requests
@@ -149,19 +217,13 @@ int main() {
             for (int c = 0; c < kClients; ++c) {
                 per_client_lat[c].reserve(kReqsPerClient);
                 clients.emplace_back([&, c]() {
-                    asio::io_context cio;
-                    asio::ip::tcp::socket sock(cio);
-                    std::error_code ec;
-                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
-                    if (ec) return;
-                    sock.set_option(asio::ip::tcp::no_delay(true), ec);
-
+                    RawSock sock = connect_sync(port);
+                    if (sock == kInvalidSock) return;
                     std::string buf;
                     buf.reserve(4096);
                     for (int r = 0; r < kReqsPerClient; ++r) {
                         auto r0 = std::chrono::steady_clock::now();
-                        asio::write(sock, asio::buffer(raw_req), ec);
-                        if (ec || !read_sync_response(sock, buf)) break;
+                        if (!send_all(sock, raw_req) || !read_sync_response(sock, buf)) break;
                         auto dt = static_cast<std::uint64_t>(
                             std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - r0
@@ -170,10 +232,12 @@ int main() {
                         per_client_lat[c].push_back(dt);
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
+                    close_raw(sock);
                 });
             }
         }
         double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
         std::vector<std::uint64_t> all_lat;
         all_lat.reserve(kTotal);
         for (const auto& v : per_client_lat) all_lat.insert(all_lat.end(), v.begin(), v.end());
@@ -188,12 +252,12 @@ int main() {
                   << "ok: " << ok_reqs.load() << "/" << kTotal << "\n";
     }
 
-    // Workload 2: 300 concurrent clients hitting 10ms handler (forces 300 OS threads!)
+    // Workload 2: 300 concurrent clients hitting 10ms handler
     {
+        os_threads_spawned.store(0, std::memory_order_relaxed);
         constexpr int kClients = 300;
         const std::string raw_req = "GET /api/v1/io-wait HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         std::atomic<int> ok_reqs{0};
-        int before_threads = os_threads_spawned.load();
 
         auto t0 = std::chrono::steady_clock::now();
         {
@@ -201,32 +265,28 @@ int main() {
             clients.reserve(kClients);
             for (int c = 0; c < kClients; ++c) {
                 clients.emplace_back([&]() {
-                    asio::io_context cio;
-                    asio::ip::tcp::socket sock(cio);
-                    std::error_code ec;
-                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
-                    if (ec) return;
-                    asio::write(sock, asio::buffer(raw_req), ec);
+                    RawSock sock = connect_sync(port);
+                    if (sock == kInvalidSock) return;
                     std::string buf;
-                    if (!ec && read_sync_response(sock, buf)) {
+                    if (send_all(sock, raw_req) && read_sync_response(sock, buf)) {
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
+                    close_raw(sock);
                 });
             }
         }
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         double rps = static_cast<double>(ok_reqs.load()) / (ms / 1000.0);
-        int spawned = os_threads_spawned.load() - before_threads;
         std::cout << "2. 300 Concurrent I/O Handlers (10ms sleep)    | "
                   << std::setw(8) << rps << " req/s | "
                   << "wall: " << std::setw(6) << ms << " ms | "
-                  << "OS threads spawned: " << spawned << " | ok: " << ok_reqs.load() << "/" << kClients << "\n";
+                  << "OS threads spawned: " << os_threads_spawned.load()
+                  << " | ok: " << ok_reqs.load() << "/" << kClients << "\n";
     }
 
     std::cout << "====================================================================================================\n";
-
     stop_flag.store(true, std::memory_order_release);
-    std::error_code ec;
-    acceptor.close(ec);
+    close_raw(srv);
+    if (accept_thread.joinable()) accept_thread.join();
     return 0;
 }

@@ -23,7 +23,7 @@
 #include "goforge/web/middleware.hpp"
 #include "goforge/web/router.hpp"
 
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
 #include "goforge/http/http_server.hpp"
 #endif
 
@@ -210,7 +210,7 @@ class WebApp {
             builder.provide_instance(metrics);
             builder.provide_instance(health);
 
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
             http::HttpServerConfig srv_cfg;
             srv_cfg.host = config.host;
             srv_cfg.port = config.port;
@@ -439,7 +439,7 @@ public:
         return state_->router->dispatch(req, std::move(go_ctx), &state_->app->services());
     }
 
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
     [[nodiscard]] std::uint16_t bound_port() {
         state_->ensure_built();
         return state_->app->services().resolve<http::HttpServer>().port();

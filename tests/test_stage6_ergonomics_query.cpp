@@ -463,12 +463,12 @@ static void test_webapp_extractors_and_controllers() {
     std::cout << "[PASS] Test 4: WebApp facade, typed extractors, smart returns & zero-lambda controllers\n";
 }
 
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
 // ============================================================================
-// Test 5: Live HTTP/1.1 TCP Roundtrip via WebApp::start() / stop()
+// Test 5: Live HTTP/1.1 TCP Roundtrip via WebApp::start() / stop() (Native gorun::net)
 // ============================================================================
 static void test_webapp_live_http() {
-    auto app = WebApp::create({.host = "127.0.0.1", .port = 0, .io_threads = 1})
+    auto app = WebApp::create({.host = "127.0.0.1", .port = 0})
         .singleton<IUserStore, InMemoryUserStore>()
         .use_defaults(false);
 
@@ -480,24 +480,19 @@ static void test_webapp_live_http() {
     const std::uint16_t port = app.bound_port();
     GF_CHECK(port != 0);
 
-    // Connect via raw Asio socket and fetch GET /api/v1/users/1
-    asio::io_context ioc;
-    asio::ip::tcp::socket sock(ioc);
-    sock.connect({asio::ip::make_address("127.0.0.1"), port});
-
+    auto sock = gorun::net::TcpStream::connect("127.0.0.1", port);
     const std::string raw_req =
         "GET /api/v1/users/1 HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
         "Connection: close\r\n\r\n";
-    asio::write(sock, asio::buffer(raw_req));
+    GF_CHECK(sock.write_all(raw_req).ok());
 
     std::string raw_resp;
-    asio::error_code ec;
     char buf[2048];
     for (;;) {
-        std::size_t n = sock.read_some(asio::buffer(buf), ec);
-        if (n > 0) raw_resp.append(buf, n);
-        if (ec) break;
+        auto rd = sock.read(buf, sizeof(buf));
+        if (!rd.ok() || rd.eof()) break;
+        raw_resp.append(buf, static_cast<std::size_t>(rd.bytes));
     }
 
     GF_CHECK(raw_resp.find("HTTP/1.1 200 OK") != std::string::npos);
@@ -516,7 +511,7 @@ int main() {
     test_query_fluent_operations();
     test_model_reflection_and_sql_ast();
     test_webapp_extractors_and_controllers();
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
     test_webapp_live_http();
 #endif
     std::cout << "=== All Stage 6 tests passed! ===\n";

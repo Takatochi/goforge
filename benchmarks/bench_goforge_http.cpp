@@ -19,16 +19,49 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Identical synchronous client helper to bench_asio_classic.cpp & bench_std_http.cpp
-// so all 4 servers are measured apples-to-apples without clients competing for the server's gorun workers!
-bool read_sync_response(asio::ip::tcp::socket& sock, std::string& buf) {
+#if defined(_WIN32)
+using RawSock = SOCKET;
+inline constexpr RawSock kInvalidSock = INVALID_SOCKET;
+inline void close_raw(RawSock s) { if (s != kInvalidSock) ::closesocket(s); }
+#else
+using RawSock = int;
+inline constexpr RawSock kInvalidSock = -1;
+inline void close_raw(RawSock s) { if (s >= 0) ::close(s); }
+#endif
+
+RawSock connect_sync_client(std::uint16_t port) {
+    RawSock s = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (s == kInvalidSock) return kInvalidSock;
+    int nodelay = 1;
+    ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close_raw(s);
+        return kInvalidSock;
+    }
+    return s;
+}
+
+bool send_all_sync(RawSock s, std::string_view data) {
+    std::size_t off = 0;
+    while (off < data.size()) {
+        auto n = ::send(s, data.data() + off, static_cast<int>(data.size() - off), 0);
+        if (n <= 0) return false;
+        off += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+bool read_sync_response(RawSock sock, std::string& buf) {
     char chunk[4096];
-    std::error_code ec;
     std::size_t sep = std::string::npos;
     while ((sep = buf.find("\r\n\r\n")) == std::string::npos) {
-        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-        if (ec || n == 0) return false;
-        buf.append(chunk, n);
+        auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+        if (n <= 0) return false;
+        buf.append(chunk, static_cast<std::size_t>(n));
     }
 
     std::size_t content_length = 0;
@@ -44,9 +77,9 @@ bool read_sync_response(asio::ip::tcp::socket& sock, std::string& buf) {
 
     const std::size_t total = sep + 4 + content_length;
     while (buf.size() < total) {
-        std::size_t n = sock.read_some(asio::buffer(chunk, sizeof(chunk)), ec);
-        if (ec || n == 0) return false;
-        buf.append(chunk, n);
+        auto n = ::recv(sock, chunk, static_cast<int>(sizeof(chunk)), 0);
+        if (n <= 0) return false;
+        buf.append(chunk, static_cast<std::size_t>(n));
     }
     buf.erase(0, total);
     return true;
@@ -64,42 +97,24 @@ std::uint64_t pct(const std::vector<std::uint64_t>& sorted, double q) {
 int main() {
     std::cout << std::unitbuf;
 
-    auto app = goforge::AppBuilder{}
-        .provide_singleton<goforge::obs::MetricsRegistry>()
-        .provide_singleton<goforge::web::Router>()
-        .provide_instance(goforge::http::HttpServerConfig{
-            .host = "127.0.0.1",
-            .port = 0,
-            .io_threads = 2
-        })
-        .provide([](const goforge::http::HttpServerConfig& cfg,
-                    goforge::web::Router& router,
-                    goforge::ServiceProvider& sp,
-                    goforge::Lifecycle& lc) -> std::shared_ptr<goforge::http::HttpServer> {
-            auto srv = std::make_shared<goforge::http::HttpServer>(cfg, router.to_http_handler(&sp));
-            srv->attach_lifecycle(lc, "bench-http");
-            return srv;
-        })
-        .invoke([](goforge::web::Router& router,
-                   goforge::obs::MetricsRegistry& metrics,
-                   goforge::http::HttpServer&) {
-            router.use(metrics.middleware());
-            router.get("/api/v1/users/:id", [](goforge::web::HttpContext& c) {
-                c.json(200, goforge::H{{"id", c.param_or("id")}, {"status", "ok"}});
-            });
-            router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
-                gorun::sleep_for(10ms);
-                c.json(200, goforge::H{{"waited_ms", 10}});
-            });
-        })
-        .build();
+    auto app = goforge::WebApp::create({.host = "127.0.0.1", .port = 0})
+        .use_metrics();
 
-    app->start();
-    const std::uint16_t port = app->services().resolve<goforge::http::HttpServer>().port();
+    app.get("/api/v1/users/:id", [](goforge::web::HttpContext& c) {
+        c.json(200, goforge::H{{"id", c.param_or("id")}, {"status", "ok"}});
+    });
+    app.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
+        gorun::sleep_for(10ms);
+        c.json(200, goforge::H{{"waited_ms", 10}});
+    });
+
+    app.start();
+    const std::uint16_t port = app.bound_port();
 
     std::cout << "====================================================================================================\n";
-    std::cout << "  goforge (C++20 + gorun M:N + Standalone Asio) HTTP/1.1 Benchmark Suite\n";
-    std::cout << "  Active gorun Workers: " << gorun::default_runtime().worker_count() << " | Asio I/O Threads: 2\n";
+    std::cout << "  goforge (100% Native gorun M:N + gorun::net IOCP/epoll/kqueue — ZERO Asio!) HTTP/1.1 Benchmark\n";
+    std::cout << "  Arch: " << gorun::detail::kArchitectureName
+              << " | Active gorun Workers: " << gorun::default_runtime().worker_count() << "\n";
     std::cout << "====================================================================================================\n";
 
     // Workload 1: High-throughput Keep-Alive JSON API (32 concurrent clients x 500 requests = 16,000 reqs)
@@ -119,19 +134,14 @@ int main() {
             for (int c = 0; c < kClients; ++c) {
                 per_client_lat[c].reserve(kReqsPerClient);
                 clients.emplace_back([&, c]() {
-                    asio::io_context cio;
-                    asio::ip::tcp::socket sock(cio);
-                    std::error_code ec;
-                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
-                    if (ec) return;
-                    sock.set_option(asio::ip::tcp::no_delay(true), ec);
+                    RawSock sock = connect_sync_client(port);
+                    if (sock == kInvalidSock) return;
 
                     std::string buf;
                     buf.reserve(4096);
                     for (int r = 0; r < kReqsPerClient; ++r) {
                         auto r0 = std::chrono::steady_clock::now();
-                        asio::write(sock, asio::buffer(raw_req), ec);
-                        if (ec || !read_sync_response(sock, buf)) break;
+                        if (!send_all_sync(sock, raw_req) || !read_sync_response(sock, buf)) break;
                         auto dt = static_cast<std::uint64_t>(
                             std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - r0
@@ -140,6 +150,7 @@ int main() {
                         per_client_lat[c].push_back(dt);
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
+                    close_raw(sock);
                 });
             }
         }
@@ -171,16 +182,13 @@ int main() {
             clients.reserve(kClients);
             for (int c = 0; c < kClients; ++c) {
                 clients.emplace_back([&]() {
-                    asio::io_context cio;
-                    asio::ip::tcp::socket sock(cio);
-                    std::error_code ec;
-                    sock.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), ec);
-                    if (ec) return;
-                    asio::write(sock, asio::buffer(raw_req), ec);
+                    RawSock sock = connect_sync_client(port);
+                    if (sock == kInvalidSock) return;
                     std::string buf;
-                    if (!ec && read_sync_response(sock, buf)) {
+                    if (send_all_sync(sock, raw_req) && read_sync_response(sock, buf)) {
                         ok_reqs.fetch_add(1, std::memory_order_relaxed);
                     }
+                    close_raw(sock);
                 });
             }
         }
@@ -193,6 +201,6 @@ int main() {
     }
 
     std::cout << "====================================================================================================\n";
-    (void)app->stop();
+    (void)app.stop();
     return 0;
 }

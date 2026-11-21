@@ -34,7 +34,7 @@ def expand(rel_path: str) -> str:
         stripped = line.strip()
         if stripped == "#pragma once":
             continue
-        if stripped.startswith("#if defined(GOFORGE_HAS_ASIO)") or stripped.startswith("#if defined(GOFORGE_HAS_SQLITE)"):
+        if stripped.startswith("#if defined(GOFORGE_HAS_SQLITE)"):
             skip_optional_block = True
             continue
         if skip_optional_block:

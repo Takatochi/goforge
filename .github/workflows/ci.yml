@@ -23,6 +23,10 @@ jobs:
             os: ubuntu-latest
             compiler: clang++
             generator: "Unix Makefiles"
+          - name: "macOS Apple Silicon (ARM64, Release)"
+            os: macos-latest
+            compiler: clang++
+            generator: "Unix Makefiles"
           - name: "Windows x64 (MinGW-w64 GCC, Release)"
             os: windows-latest
             compiler: g++
@@ -40,15 +44,14 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
             -DGOFORGE_BUILD_TESTS=ON \
             -DGOFORGE_BUILD_EXAMPLES=ON \
-            -DGOFORGE_BUILD_BENCHMARKS=ON \
-            -DGOFORGE_ENABLE_ASIO=ON
+            -DGOFORGE_BUILD_BENCHMARKS=ON
         shell: bash
 
       - name: Build All Targets
         run: cmake --build build --parallel
         shell: bash
 
-      - name: Run All Stage 1-4 Test Suites
+      - name: Run All Stage 1-7 Test Suites
         run: ctest --test-dir build --output-on-failure
         shell: bash
 

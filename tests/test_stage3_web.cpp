@@ -54,18 +54,17 @@ struct LiveResp {
     std::string body;
 };
 
-LiveResp send_http(goforge::net::AsioExecutor& io, std::uint16_t port, std::string_view wire) {
-    goforge::net::AsyncTcpSocket sock(io.context());
-    GOFORGE_ASSERT(!sock.connect("127.0.0.1", port));
-    auto [written, wec] = sock.write_all(wire);
-    GOFORGE_ASSERT(!wec && written == wire.size());
+LiveResp send_http(std::uint16_t port, std::string_view wire) {
+    auto sock = gorun::net::TcpStream::connect("127.0.0.1", port);
+    auto wr = sock.write_all(wire);
+    GOFORGE_ASSERT(wr.ok() && static_cast<std::size_t>(wr.bytes) == wire.size());
 
     std::string raw;
     char buf[4096];
     for (;;) {
-        auto [n, ec] = sock.read_some(buf, sizeof(buf));
-        if (ec || n == 0) break;
-        raw.append(buf, n);
+        auto rd = sock.read(buf, sizeof(buf));
+        if (!rd.ok() || rd.eof()) break;
+        raw.append(buf, static_cast<std::size_t>(rd.bytes));
     }
     sock.close();
 
@@ -440,15 +439,14 @@ void test_08_end_to_end_live_rest_service() {
 
     app->start();
     auto port = app->services().resolve<goforge::http::HttpServer>().port();
-    goforge::net::AsioExecutor client_io(1);
 
     // 1. Unauthenticated POST -> 401
-    auto r_unauth = send_http(client_io, port,
+    auto r_unauth = send_http(port,
         "POST /api/v1/users/7 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\nArtur");
     GOFORGE_ASSERT(r_unauth.status == 401);
 
     // 2. Authenticated POST -> 201 Created
-    auto r_post = send_http(client_io, port,
+    auto r_post = send_http(port,
         "POST /api/v1/users/7 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dev-token\r\n"
         "Content-Length: 5\r\nConnection: close\r\n\r\nArtur");
     GOFORGE_ASSERT(r_post.status == 201);
@@ -456,18 +454,18 @@ void test_08_end_to_end_live_rest_service() {
     GOFORGE_ASSERT(r_post.raw_headers.find("X-Trace-Id:") != std::string::npos);
 
     // 3. GET -> 200 OK
-    auto r_get = send_http(client_io, port,
+    auto r_get = send_http(port,
         "GET /api/v1/users/7 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dev-token\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r_get.status == 200);
     GOFORGE_ASSERT(r_get.body == "{\"id\":7,\"name\":\"Artur\"}");
 
     // 4. DELETE -> 204 No Content
-    auto r_del = send_http(client_io, port,
+    auto r_del = send_http(port,
         "DELETE /api/v1/users/7 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dev-token\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r_del.status == 204);
 
     // 5. GET after DELETE -> 404
-    auto r_gone = send_http(client_io, port,
+    auto r_gone = send_http(port,
         "GET /api/v1/users/7 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer dev-token\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r_gone.status == 404);
 

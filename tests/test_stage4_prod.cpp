@@ -42,18 +42,17 @@ struct LiveResp {
     std::string body;
 };
 
-LiveResp send_http(goforge::net::AsioExecutor& io, std::uint16_t port, std::string_view wire) {
-    goforge::net::AsyncTcpSocket sock(io.context());
-    GOFORGE_ASSERT(!sock.connect("127.0.0.1", port));
-    auto [written, wec] = sock.write_all(wire);
-    GOFORGE_ASSERT(!wec && written == wire.size());
+LiveResp send_http(std::uint16_t port, std::string_view wire) {
+    auto sock = gorun::net::TcpStream::connect("127.0.0.1", port);
+    auto wr = sock.write_all(wire);
+    GOFORGE_ASSERT(wr.ok() && static_cast<std::size_t>(wr.bytes) == wire.size());
 
     std::string raw;
     char buf[4096];
     for (;;) {
-        auto [n, ec] = sock.read_some(buf, sizeof(buf));
-        if (ec || n == 0) break;
-        raw.append(buf, n);
+        auto rd = sock.read(buf, sizeof(buf));
+        if (!rd.ok() || rd.eof()) break;
+        raw.append(buf, static_cast<std::size_t>(rd.bytes));
     }
     sock.close();
 
@@ -225,15 +224,14 @@ void test_04_live_production_service_and_graceful_draining() {
 
     app->start();
     auto port = app->services().resolve<goforge::http::HttpServer>().port();
-    goforge::net::AsioExecutor client_io(1);
 
-    auto r1 = send_http(client_io, port, "GET /api/work HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto r1 = send_http(port, "GET /api/work HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r1.status == 200 && r1.body == "{\"done\":true}");
 
-    auto r2 = send_http(client_io, port, "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto r2 = send_http(port, "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r2.status == 200);
 
-    auto r3 = send_http(client_io, port, "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto r3 = send_http(port, "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r3.status == 200 && r3.body.find("\"total_requests\":2") != std::string::npos);
 
     auto errs = app->stop();

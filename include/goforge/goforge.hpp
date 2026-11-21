@@ -19,8 +19,7 @@
 #include "goforge/obs/logger.hpp"
 #include "goforge/obs/metrics.hpp"
 
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
-#include "goforge/net/asio_bridge.hpp"
+#if !defined(GORUN_DISABLE_NET)
 #include "goforge/http/http_server.hpp"
 #endif
 

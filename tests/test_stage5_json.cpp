@@ -241,7 +241,7 @@ void test_05_nested_dtos_and_collections() {
 }
 
 // Test 06: Live TCP typed DTO REST CRUD over HttpServer + AppBuilder + DI
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
 void test_06_live_tcp_typed_dto_crud() {
     std::cout << "[TEST 06] Live TCP typed DTO REST API (POST/GET/PATCH with nlohmann/json)... ";
 
@@ -296,18 +296,16 @@ void test_06_live_tcp_typed_dto_crud() {
 
     app->start();
     auto port = app->services().resolve<goforge::http::HttpServer>().port();
-    goforge::net::AsioExecutor io(1);
 
     auto send_raw = [&](std::string_view wire) -> std::pair<int, std::string> {
-        goforge::net::AsyncTcpSocket sock(io.context());
-        GOFORGE_ASSERT(!sock.connect("127.0.0.1", port));
+        auto sock = gorun::net::TcpStream::connect("127.0.0.1", port);
         (void)sock.write_all(wire);
         std::string raw;
         char buf[4096];
         for (;;) {
-            auto [n, ec] = sock.read_some(buf, sizeof(buf));
-            if (ec || n == 0) break;
-            raw.append(buf, n);
+            auto rd = sock.read(buf, sizeof(buf));
+            if (!rd.ok() || rd.eof()) break;
+            raw.append(buf, static_cast<std::size_t>(rd.bytes));
         }
         sock.close();
         auto sep = raw.find("\r\n\r\n");
@@ -348,7 +346,7 @@ int main() {
     test_03_dto_validation_422();
     test_04_partial_patch_dto_and_optional_fields();
     test_05_nested_dtos_and_collections();
-#if defined(GOFORGE_HAS_ASIO) && GOFORGE_HAS_ASIO
+#if !defined(GORUN_DISABLE_NET)
     test_06_live_tcp_typed_dto_crud();
 #endif
 

@@ -32,17 +32,17 @@ struct SimpleClientResponse {
     std::string body;
 };
 
-/// Minimal HTTP/1.1 response reader on top of non-blocking `AsyncTcpSocket` (supports Keep-Alive).
-SimpleClientResponse read_http_response(goforge::net::AsyncTcpSocket& sock,
+/// Minimal HTTP/1.1 response reader on top of native non-blocking `gorun::net::TcpStream` (supports Keep-Alive).
+SimpleClientResponse read_http_response(gorun::net::TcpStream& sock,
                                         std::string& buf,
                                         gorun::Context ctx = gorun::background()) {
     char chunk[4096];
     std::size_t header_end = std::string::npos;
 
     while ((header_end = buf.find("\r\n\r\n")) == std::string::npos) {
-        auto [n, ec] = sock.read_some(chunk, sizeof(chunk), ctx);
-        GOFORGE_ASSERT(!ec && n > 0);
-        buf.append(chunk, n);
+        auto r = sock.read(chunk, sizeof(chunk), ctx);
+        GOFORGE_ASSERT(r.ok() && !r.eof());
+        buf.append(chunk, static_cast<std::size_t>(r.bytes));
     }
 
     SimpleClientResponse resp;
@@ -72,9 +72,9 @@ SimpleClientResponse read_http_response(goforge::net::AsyncTcpSocket& sock,
 
     const std::size_t total_len = header_end + 4 + content_length;
     while (buf.size() < total_len) {
-        auto [n, ec] = sock.read_some(chunk, sizeof(chunk), ctx);
-        GOFORGE_ASSERT(!ec && n > 0);
-        buf.append(chunk, n);
+        auto r = sock.read(chunk, sizeof(chunk), ctx);
+        GOFORGE_ASSERT(r.ok() && !r.eof());
+        buf.append(chunk, static_cast<std::size_t>(r.bytes));
     }
 
     resp.body = buf.substr(header_end + 4, content_length);
@@ -82,14 +82,10 @@ SimpleClientResponse read_http_response(goforge::net::AsyncTcpSocket& sock,
     return resp;
 }
 
-SimpleClientResponse send_oneshot(goforge::net::AsioExecutor& client_io,
-                                  std::uint16_t port,
-                                  std::string_view raw_req) {
-    goforge::net::AsyncTcpSocket sock(client_io.context());
-    auto ec = sock.connect("127.0.0.1", port);
-    GOFORGE_ASSERT(!ec);
-    auto [written, wec] = sock.write_all(raw_req);
-    GOFORGE_ASSERT(!wec && written == raw_req.size());
+SimpleClientResponse send_oneshot(std::uint16_t port, std::string_view raw_req) {
+    auto sock = gorun::net::TcpStream::connect("127.0.0.1", port);
+    auto wr = sock.write_all(raw_req);
+    GOFORGE_ASSERT(wr.ok() && static_cast<std::size_t>(wr.bytes) == raw_req.size());
     std::string buf;
     auto resp = read_http_response(sock, buf);
     sock.close();
@@ -122,9 +118,8 @@ void test_01_basic_get_and_post() {
     server.start();
     GORUN_DEFER { server.stop(); };
 
-    goforge::net::AsioExecutor client_io(1);
     auto r1 = send_oneshot(
-        client_io, server.port(),
+        server.port(),
         "GET /ping?lang=cpp20 HTTP/1.1\r\n"
         "Host: localhost\r\n"
         "X-Trace-Id: trace-99\r\n"
@@ -135,7 +130,7 @@ void test_01_basic_get_and_post() {
 
     std::string payload = "hello-goforge-payload-12345";
     auto r2 = send_oneshot(
-        client_io, server.port(),
+        server.port(),
         "POST /echo HTTP/1.1\r\n"
         "Host: localhost\r\n"
         "Content-Length: " + std::to_string(payload.size()) + "\r\n"
@@ -164,9 +159,7 @@ void test_02_keep_alive_connection_reuse() {
     server.start();
     GORUN_DEFER { server.stop(); };
 
-    goforge::net::AsioExecutor client_io(1);
-    goforge::net::AsyncTcpSocket sock(client_io.context());
-    GOFORGE_ASSERT(!sock.connect("127.0.0.1", server.port()));
+    auto sock = gorun::net::TcpStream::connect("127.0.0.1", server.port());
 
     std::string buf;
     for (int i = 1; i <= 10; ++i) {
@@ -175,8 +168,8 @@ void test_02_keep_alive_connection_reuse() {
             "Host: localhost\r\n" +
             std::string(i == 10 ? "Connection: close\r\n" : "") +
             "\r\n";
-        auto [written, wec] = sock.write_all(req);
-        GOFORGE_ASSERT(!wec && written == req.size());
+        auto wr = sock.write_all(req);
+        GOFORGE_ASSERT(wr.ok() && static_cast<std::size_t>(wr.bytes) == req.size());
         auto resp = read_http_response(sock, buf);
         GOFORGE_ASSERT(resp.status == 200);
         GOFORGE_ASSERT(resp.body == "/step/" + std::to_string(i) + ":" + std::to_string(i));
@@ -204,12 +197,11 @@ void test_03_exception_isolation() {
     server.start();
     GORUN_DEFER { server.stop(); };
 
-    goforge::net::AsioExecutor client_io(1);
-    auto bad = send_oneshot(client_io, server.port(), "GET /boom HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto bad = send_oneshot(server.port(), "GET /boom HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(bad.status == 500);
     GOFORGE_ASSERT(bad.body.find("simulated handler panic") != std::string::npos);
 
-    auto ok = send_oneshot(client_io, server.port(), "GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto ok = send_oneshot(server.port(), "GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(ok.status == 200 && ok.body == "healthy");
 
     std::cout << "PASSED\n";
@@ -233,13 +225,11 @@ void test_04_malformed_and_oversized_requests() {
     server.start();
     GORUN_DEFER { server.stop(); };
 
-    goforge::net::AsioExecutor client_io(1);
-
-    auto bad = send_oneshot(client_io, server.port(), "INVALID_REQUEST_LINE\r\n\r\n");
+    auto bad = send_oneshot(server.port(), "INVALID_REQUEST_LINE\r\n\r\n");
     GOFORGE_ASSERT(bad.status == 400);
 
     auto too_big = send_oneshot(
-        client_io, server.port(),
+        server.port(),
         "POST /upload HTTP/1.1\r\n"
         "Host: localhost\r\n"
         "Content-Length: 9999\r\n"
@@ -293,7 +283,6 @@ void test_05_concurrent_load_with_gorun_primitives() {
     );
 
     server.start();
-    goforge::net::AsioExecutor client_io(2);
 
     constexpr int kClients = 300;
     std::atomic<int> ok_count{0};
@@ -302,9 +291,9 @@ void test_05_concurrent_load_with_gorun_primitives() {
     {
         gorun::Scope client_scope;
         for (int i = 0; i < kClients; ++i) {
-            gorun::go([&]() {
+            gorun::go(gorun::StackSize::Compact, [&]() {
                 auto resp = send_oneshot(
-                    client_io, server.port(),
+                    server.port(),
                     "GET /work HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
                 );
                 if (resp.status == 200 && resp.body == "42") {
@@ -347,7 +336,6 @@ void test_06_slow_handlers_do_not_block_fast_handlers() {
     server.start();
     GORUN_DEFER { server.stop(); };
 
-    goforge::net::AsioExecutor client_io(2);
     std::atomic<int> slow_done{0};
     std::atomic<int> fast_done{0};
     long long fast_elapsed_ms = 0;
@@ -356,8 +344,8 @@ void test_06_slow_handlers_do_not_block_fast_handlers() {
         gorun::Scope scope;
         // Launch 40 slow requests (more than CPU core count!)
         for (int i = 0; i < 40; ++i) {
-            gorun::go([&]() {
-                auto r = send_oneshot(client_io, server.port(), "GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            gorun::go(gorun::StackSize::Compact, [&]() {
+                auto r = send_oneshot(server.port(), "GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
                 if (r.status == 200 && r.body == "slow-done") {
                     slow_done.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -371,8 +359,8 @@ void test_06_slow_handlers_do_not_block_fast_handlers() {
         {
             gorun::Scope fast_scope;
             for (int i = 0; i < 20; ++i) {
-                gorun::go([&]() {
-                    auto r = send_oneshot(client_io, server.port(), "GET /fast HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+                gorun::go(gorun::StackSize::Compact, [&]() {
+                    auto r = send_oneshot(server.port(), "GET /fast HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
                     if (r.status == 200 && r.body == "fast-done") {
                         fast_done.fetch_add(1, std::memory_order_relaxed);
                     }
@@ -426,8 +414,7 @@ void test_07_app_lifecycle_http_integration() {
     auto& srv = app->services().resolve<goforge::http::HttpServer>();
     GOFORGE_ASSERT(srv.port() != 0);
 
-    goforge::net::AsioExecutor client_io(1);
-    auto r = send_oneshot(client_io, srv.port(), "GET /stage2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    auto r = send_oneshot(srv.port(), "GET /stage2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     GOFORGE_ASSERT(r.status == 200);
     GOFORGE_ASSERT(r.body == "Hello from goforge DI: /stage2");
 
@@ -443,7 +430,7 @@ void test_07_app_lifecycle_http_integration() {
 int main() {
     std::cout << std::unitbuf;
     std::cout << "======================================================================\n";
-    std::cout << "  goforge Stage 2 Test Suite — Standalone Asio + gorun HTTP/1.1 Server\n";
+    std::cout << "  goforge Stage 2 Test Suite — Native gorun::net HTTP/1.1 Server\n";
     std::cout << "======================================================================\n";
 
     test_01_basic_get_and_post();
