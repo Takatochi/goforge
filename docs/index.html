@@ -1082,7 +1082,7 @@ int main() {
 
     function getEditorValue() { return cmEditor ? cmEditor.getValue() : document.getElementById('pg-editor').value; }
     function setEditorValue(val) { if (cmEditor) cmEditor.setValue(val); else document.getElementById('pg-editor').value = val; }
-    function stripAnsi(text) { return String(text || '').replace(/\x1b\[[0-9;]*m/g, ''); }
+    function stripAnsi(text) { return String(text || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''); }
 
     function appendConsoleLine(text, cls) {
       const consoleEl = document.getElementById('pg-console');
@@ -1155,7 +1155,7 @@ int main() {
         const payload = {
           source: userCode,
           options: {
-            userArguments: flags,
+            userArguments: flags + ' -I. -I/app',
             executeParameters: { args: [], stdin: '' },
             compilerOptions: { executorRequest: true },
             filters: { execute: true }
