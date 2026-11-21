@@ -396,7 +396,7 @@
     <div class="hero">
       <div class="hero-left">
         <div class="badges">
-          <span class="badge">Version: v0.8.0</span>
+          <span class="badge">Version: v0.4.0</span>
           <span class="badge">C++20 / C++23</span>
           <span class="badge">Header-Only (Fx + Gin + Query + EF ORM)</span>
           <span class="badge">100% Native gorun::net (Zero Asio)</span>
@@ -515,19 +515,25 @@
 
     <!-- INSTALLATION -->
     <section id="install">
-      <h2>Quick Installation (CMake FetchContent)</h2>
+      <h2>Quick Installation (CMake FetchContent, vcpkg &amp; Conan 2.0)</h2>
       <p><code>goforge</code> is header-only and runs 100% natively on <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> (with built-in IOCP / epoll / kqueue networking &mdash; zero Asio dependency!). CMake <code>FetchContent</code> pulls <code>gorun</code>, <code>nlohmann/json</code>, and embedded SQLite 3 automatically:</p>
       <pre><code>include(FetchContent)
 
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.8.0
+    GIT_TAG        v0.4.0
 )
 FetchContent_MakeAvailable(goforge)
 
 add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
+      <p>Package manager recipes are also bundled under <code>packaging/vcpkg/</code> and <code>packaging/conan/</code>:</p>
+      <pre><code># vcpkg overlay port:
+vcpkg install goforge --overlay-ports=./packaging/vcpkg
+
+# Conan 2.0 recipe:
+conan create packaging/conan --version=0.4.0 --build=missing</code></pre>
     </section>
 
     <!-- ARCHITECTURE -->

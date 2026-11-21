@@ -2,10 +2,11 @@
 
 All notable changes to `goforge` are documented in this file.
 
-## [v0.8.0] - 2026-11-22
+## [v0.4.0] - 2026-11-22
 
 ### Changed / Breaking
 - **100% Native `gorun::net` Networking (Standalone Asio Removed):**
+  - Aligned release version with `gorun v0.4.0`.
   - Removed Standalone Asio completely (`include/goforge/net/asio_bridge.hpp`, `benchmarks/bench_asio_classic.cpp`, `GOFORGE_ENABLE_ASIO`, and Asio `FetchContent`).
   - Rewrote `HttpServer` (`include/goforge/http/http_server.hpp`), `WebApp`, integration tests (`test_stage2`–`test_stage6`), examples (`02`, `03`), and benchmarks onto native `gorun::net` (`TcpListener` / `TcpStream` over Windows IOCP, Linux `epoll`, and macOS/BSD `kqueue`).
   - Added configurable per-connection green routine stack size (`ServerOptions::connection_stack_size`) and graceful connection wake/drain via `TcpStream::cancel_handle()`.
@@ -27,6 +28,9 @@ All notable changes to `goforge` are documented in this file.
 - **First-Class Typed JSON & DTO Validation (Stage 5):**
   - Integrated `nlohmann/json` (`v3.11.3`) with `goforge::Json`, `goforge::H`, `GOFORGE_JSON_DTO`, `GOFORGE_JSON_DTO_DEFAULT`, automatic `std::optional<T>` serialization, `c.bind_json<T>()` (`400 Bad Request` / `422 Unprocessable Entity` with `.validate()`), and `c.error(...)`.
   - Stage 5 test suite (`tests/test_stage5_json.cpp`, 6 tests).
+- **Packaging & Ecosystem:**
+  - Added **vcpkg** port files (`packaging/vcpkg/vcpkg.json`, `packaging/vcpkg/portfile.cmake` with optional `sqlite` feature) and **Conan 2.0** recipe (`packaging/conan/conanfile.py` + `packaging/conan/test_package/`).
+  - Added CMake `find_package(goforge CONFIG REQUIRED)` export/install configuration (`GOFORGE_INSTALL=ON`, `cmake/goforgeConfig.cmake.in`) with automatic `find_package` detection for `gorun`, `nlohmann_json`, and `SQLite3`.
 - **Performance & Documentation:**
   - Zero-copy router middleware chain and lock-free `MetricsRegistry`.
   - Single-header distribution (`single_include/goforge/goforge.hpp`, 19 inlined headers) and interactive GitHub Pages documentation with live GCC 14.2 Compiler Explorer playground (`docs/index.html`).

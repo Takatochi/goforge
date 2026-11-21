@@ -78,11 +78,30 @@ include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.8.0 # or main
+    GIT_TAG        v0.4.0 # or main
 )
 FetchContent_MakeAvailable(goforge)
 
 add_executable(my_service main.cpp)
+target_link_libraries(my_service PRIVATE goforge::goforge)
+```
+
+### vcpkg & Conan 2.0 Package Managers
+
+Ready-to-use package recipes are included in [`packaging/vcpkg/`](./packaging/vcpkg/) and [`packaging/conan/`](./packaging/conan/):
+
+```bash
+# vcpkg (overlay port):
+vcpkg install goforge --overlay-ports=./packaging/vcpkg
+
+# Conan 2.0 (local recipe + test_package):
+conan create packaging/conan --version=0.4.0 --build=missing
+```
+
+Then in your `CMakeLists.txt`:
+
+```cmake
+find_package(goforge 0.4.0 REQUIRED CONFIG)
 target_link_libraries(my_service PRIVATE goforge::goforge)
 ```
 
