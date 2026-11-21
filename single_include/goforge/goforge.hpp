@@ -2077,7 +2077,9 @@ class HttpContext {
     mutable std::unordered_map<std::string, std::string> query_params_;
     std::unordered_map<std::string, std::any> values_;
 
-    std::vector<HandlerFunc> handlers_;
+    const std::vector<HandlerFunc>* global_handlers_{nullptr};
+    const std::vector<HandlerFunc>* route_handlers_{nullptr};
+    std::vector<HandlerFunc> owned_route_handlers_;
     std::size_t handler_index_{0};
     bool aborted_{false};
     bool written_{false};
@@ -2318,25 +2320,54 @@ public:
     [[nodiscard]] http::HttpResponse& response() noexcept { return resp_; }
     [[nodiscard]] const http::HttpResponse& response() const noexcept { return resp_; }
 
-    // ---- Middleware chain execution ----
+    // ---- Middleware chain execution (zero-copy view over global + route handler chains!) ----
+    void set_handler_views(const std::vector<HandlerFunc>* global_mws,
+                           const std::vector<HandlerFunc>* route_mws) noexcept {
+        global_handlers_ = global_mws;
+        route_handlers_ = route_mws;
+        owned_route_handlers_.clear();
+        handler_index_ = 0;
+        aborted_ = false;
+    }
+
+    void set_handler_with_fallback(const std::vector<HandlerFunc>* global_mws,
+                                   HandlerFunc fallback_endpoint) {
+        global_handlers_ = global_mws;
+        owned_route_handlers_.clear();
+        owned_route_handlers_.push_back(std::move(fallback_endpoint));
+        route_handlers_ = &owned_route_handlers_;
+        handler_index_ = 0;
+        aborted_ = false;
+    }
+
     void set_handlers(std::vector<HandlerFunc> chain) {
-        handlers_ = std::move(chain);
+        global_handlers_ = nullptr;
+        owned_route_handlers_ = std::move(chain);
+        route_handlers_ = &owned_route_handlers_;
         handler_index_ = 0;
         aborted_ = false;
     }
 
     void next() {
-        while (handler_index_ < handlers_.size() && !aborted_) {
+        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+        const std::size_t total = g_sz + r_sz;
+        while (handler_index_ < total && !aborted_) {
             const std::size_t idx = handler_index_++;
-            if (handlers_[idx]) {
-                handlers_[idx](*this);
+            const HandlerFunc& fn = (idx < g_sz)
+                ? (*global_handlers_)[idx]
+                : (*route_handlers_)[idx - g_sz];
+            if (fn) {
+                fn(*this);
             }
         }
     }
 
     void abort() noexcept {
         aborted_ = true;
-        handler_index_ = handlers_.size();
+        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+        handler_index_ = g_sz + r_sz;
     }
 
     void abort_with_text(int code, std::string msg) {
@@ -2476,8 +2507,18 @@ HandlerFunc adapt_handler(Fn&& fn) {
     }
 }
 
+struct StringViewHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+    std::size_t operator()(const std::string& s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
 struct TrieNode {
-    std::unordered_map<std::string, std::unique_ptr<TrieNode>> static_children;
+    std::unordered_map<std::string, std::unique_ptr<TrieNode>, StringViewHash, std::equal_to<>> static_children;
 
     std::string param_name;
     std::unique_ptr<TrieNode> param_child;
@@ -2517,8 +2558,8 @@ inline bool match_trie(const TrieNode* node,
         return false;
     }
 
-    // 1. Static segment priority
-    auto it = node->static_children.find(std::string(segs[depth]));
+    // 1. Static segment priority (zero-allocation transparent string_view lookup!)
+    auto it = node->static_children.find(segs[depth]);
     if (it != node->static_children.end()) {
         if (match_trie(it->second.get(), segs, depth + 1, out)) {
             return true;
@@ -2765,11 +2806,9 @@ public:
             detail::match_trie(it->second.get(), segs, 0, match);
         }
 
-        std::vector<HandlerFunc> full_chain = global_middlewares_;
-
         if (match.matched && match.chain) {
             ctx.set_params(std::move(match.params));
-            full_chain.insert(full_chain.end(), match.chain->begin(), match.chain->end());
+            ctx.set_handler_views(&global_middlewares_, match.chain);
         } else {
             // Check whether another HTTP method matches this path -> 405 Method Not Allowed
             std::vector<std::string> allowed_methods;
@@ -2788,20 +2827,19 @@ public:
                     if (i > 0) allow_hdr += ", ";
                     allow_hdr += allowed_methods[i];
                 }
-                full_chain.push_back([allow = std::move(allow_hdr)](HttpContext& c) {
+                ctx.set_handler_with_fallback(&global_middlewares_, [allow = std::move(allow_hdr)](HttpContext& c) {
                     c.set_header("Allow", allow);
                     c.error(405, "method_not_allowed");
                 });
             } else if (no_route_handler_) {
-                full_chain.push_back(no_route_handler_);
+                ctx.set_handler_with_fallback(&global_middlewares_, no_route_handler_);
             } else {
-                full_chain.push_back([](HttpContext& c) {
+                ctx.set_handler_with_fallback(&global_middlewares_, [](HttpContext& c) {
                     c.error(404, "not_found");
                 });
             }
         }
 
-        ctx.set_handlers(std::move(full_chain));
         ctx.next();
 
         return std::move(ctx.response());
@@ -3230,10 +3268,8 @@ class MetricsRegistry {
     std::atomic<std::uint64_t> status_4xx_{0};
     std::atomic<std::uint64_t> status_5xx_{0};
 
-    mutable gorun::Mutex lat_mtx_;
-    std::array<std::uint64_t, kWindowSize> latencies_{};
-    std::size_t lat_pos_{0};
-    std::size_t lat_count_{0};
+    std::array<std::atomic<std::uint64_t>, kWindowSize> latencies_{};
+    std::atomic<std::uint64_t> lat_writes_{0};
 
     static std::uint64_t percentile_sorted(const std::vector<std::uint64_t>& sorted, double q) noexcept {
         if (sorted.empty()) return 0;
@@ -3247,7 +3283,8 @@ class MetricsRegistry {
 public:
     MetricsRegistry() = default;
 
-    void record(int status_code, std::uint64_t latency_us) {
+    /// 100% lock-free hot-path metric recording (zero mutex contention across all gorun workers!).
+    void record(int status_code, std::uint64_t latency_us) noexcept {
         total_requests_.fetch_add(1, std::memory_order_relaxed);
         if (status_code >= 200 && status_code < 300) {
             status_2xx_.fetch_add(1, std::memory_order_relaxed);
@@ -3259,12 +3296,8 @@ public:
             status_5xx_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        std::lock_guard<gorun::Mutex> lk(lat_mtx_);
-        latencies_[lat_pos_] = latency_us;
-        lat_pos_ = (lat_pos_ + 1) % kWindowSize;
-        if (lat_count_ < kWindowSize) {
-            ++lat_count_;
-        }
+        const std::uint64_t slot = lat_writes_.fetch_add(1, std::memory_order_relaxed) & (kWindowSize - 1);
+        latencies_[static_cast<std::size_t>(slot)].store(latency_us, std::memory_order_relaxed);
     }
 
     [[nodiscard]] MetricsSnapshot snapshot() const {
@@ -3279,10 +3312,12 @@ public:
         s.status_5xx = status_5xx_.load(std::memory_order_relaxed);
         s.avg_rps = (s.uptime_sec > 1e-6) ? (static_cast<double>(s.total_requests) / s.uptime_sec) : 0.0;
 
+        const std::uint64_t writes = lat_writes_.load(std::memory_order_relaxed);
+        const std::size_t count = static_cast<std::size_t>(std::min<std::uint64_t>(writes, kWindowSize));
         std::vector<std::uint64_t> copy;
-        {
-            std::lock_guard<gorun::Mutex> lk(lat_mtx_);
-            copy.assign(latencies_.begin(), latencies_.begin() + static_cast<std::ptrdiff_t>(lat_count_));
+        copy.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            copy.push_back(latencies_[i].load(std::memory_order_relaxed));
         }
 
         if (!copy.empty()) {

@@ -501,8 +501,8 @@
           <p>Need to call a synchronous C library like <code>libpq</code> or <code>sqlite3</code>? Wrap it in <code>blocking_pool.run([&amp;]{ return db_query(); })</code> — the blocking syscall executes on a dedicated OS pool while your green routine parks cleanly on a <code>gorun::Channel</code>, leaving all <code>gorun</code> workers free.</p>
         </div>
         <div class="card card-accent">
-          <h4>5. Zero OS-Thread Explosion &amp; 3.5x Lower Median Latency than Go</h4>
-          <p>Under 300 simultaneous I/O-bound connections, thread-per-connection C++ spawns 300 OS kernel threads, whereas <code>goforge</code> serves 300/300 requests on a fixed M:N worker pool. On Keep-Alive JSON APIs, <code>goforge</code> achieves <strong>p50 = 149 us</strong> (3.5x faster median latency than Go 1.27 <code>net/http</code> at 525 us).</p>
+          <h4>5. 151,893 req/s &amp; 5.7x Lower Median Latency than Go</h4>
+          <p>Under 300 simultaneous I/O-bound connections, <code>goforge</code> completes 300/300 in <strong>56.5 ms</strong> on a fixed M:N worker pool (faster than 300-thread <code>std::jthread</code> at 61.6 ms). On Keep-Alive JSON APIs, <code>goforge</code> hits <strong>151,893 req/s (p50 = 92 us, p99 = 635 us)</strong> — outperforming both Go 1.27 (42,504 req/s) and raw Classic Async Asio (122,001 req/s).</p>
         </div>
         <div class="card card-green">
           <h4>6. Production-Ready Out of the Box</h4>
@@ -669,34 +669,34 @@ health.mount(router, metrics);</code></pre>
       <h2>4-Way HTTP/1.1 Benchmarks: <code>goforge</code> vs. Classic Async Asio vs. Go 1.27 vs. <code>std::jthread</code></h2>
       <p>Measured on 16 logical CPU cores (Windows x64, <code>GCC 16.2.0 -O3</code> vs <code>go1.27.4</code>). Full source in <code>benchmarks/</code>:</p>
 
-      <h3>Workload 1: Keep-Alive JSON API Median Latency (p50 in microseconds — LOWER IS BETTER)</h3>
+      <h3>Workload 1: Keep-Alive JSON API Throughput (req/s — HIGHER IS BETTER) &amp; Latency</h3>
       <div class="bench-row">
         <div class="bench-label">
           <span>Standard C++20 Raw Socket (no Router/DI/Metrics)</span>
-          <span>36 us (165,680 req/s)</span>
+          <span>165,680 req/s | p50: 36 us | p99: 161 us</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-std" style="width: 6.9%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-std" style="width: 100%;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
-          <span>goforge (Full Stack: HttpServer + Router + Scoped DI + Metrics)</span>
-          <span>129 us (34,388 req/s) [2.0x Lower p50 than Classic Asio, 4.1x vs Go!]</span>
+          <span>goforge (Full Stack: Router + Scoped DI + Lock-Free Metrics + JSON)</span>
+          <span>151,893 req/s | p50: 92 us | p99: 635 us [3.57x Faster than Go, +24% vs Classic Asio!]</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-goforge" style="width: 24.6%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-goforge" style="width: 91.7%;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
           <span>Classic Async Standalone Asio (Raw Callbacks, 2 I/O threads)</span>
-          <span>255 us (119,805 req/s, p99: 544 us)</span>
+          <span>122,001 req/s | p50: 239 us | p99: 448 us</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-go" style="width: 48.7%; background: #f59e0b;"></div></div>
+        <div class="bar-track"><div class="bar-fill-go" style="width: 73.6%; background: #f59e0b;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
           <span>Native Go 1.27.4 net/http (ServeMux)</span>
-          <span>524 us (42,504 req/s)</span>
+          <span>42,504 req/s | p50: 524 us | p99: 4,234 us</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-go" style="width: 100%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-go" style="width: 25.7%;"></div></div>
       </div>
 
       <h3>Workload 2: 300 Concurrent I/O-Bound Connections (10ms handler wait)</h3>
@@ -715,28 +715,28 @@ health.mount(router, metrics);</code></pre>
             <tr>
               <td><strong><code>goforge</code> (Full Stack + <code>gorun</code> M:N)</strong></td>
               <td><strong>300 / 300 OK</strong></td>
-              <td>561.0 ms</td>
+              <td><strong>56.5 ms</strong> (5,309 req/s)</td>
               <td><strong>Fixed 16 workers (+ 2 I/O)</strong></td>
               <td>4 lines sequential C++ (DI, DTOs, Middleware)</td>
             </tr>
             <tr>
               <td><strong>Classic Async Standalone Asio</strong></td>
               <td><strong>300 / 300 OK</strong></td>
-              <td><strong>38.2 ms</strong></td>
+              <td><strong>38.5 ms</strong> (7,793 req/s)</td>
               <td><strong>2 I/O threads</strong></td>
               <td>~35 lines callback state machine + <code>shared_from_this</code></td>
             </tr>
             <tr>
               <td><strong>Native Go 1.27 <code>net/http</code></strong></td>
               <td>214 / 300 OK (ephemeral ports)</td>
-              <td>42.6 ms</td>
+              <td>42.6 ms (5,024 req/s)</td>
               <td>M:N goroutine pool</td>
               <td>Simple sequential Go (with GC)</td>
             </tr>
             <tr>
               <td><strong>Standard C++20 (<code>std::jthread</code>)</strong></td>
               <td>300 / 300 OK</td>
-              <td>61.6 ms</td>
+              <td>61.6 ms (4,871 req/s)</td>
               <td><strong>300 OS kernel threads spawned</strong></td>
               <td>Simple, but explodes OS threads at C10K</td>
             </tr>

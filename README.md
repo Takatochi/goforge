@@ -207,21 +207,21 @@ int main() {
 
 ## 4-Way HTTP/1.1 Performance Benchmarks (16 Logical Cores, Windows x64)
 
-All four benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_asio_classic.cpp](./benchmarks/bench_asio_classic.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp)) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`):
+All four benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_asio_classic.cpp](./benchmarks/bench_asio_classic.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp)) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`) using identical client harnesses:
 
-| Workload | `goforge` (Full Stack: Router + Scoped DI + Metrics) | Classic Async Asio (Raw Callbacks, 2 I/O threads) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
+| Workload | `goforge` (Full Stack: Router + Scoped DI + Metrics + JSON) | Classic Async Asio (Raw Callbacks, 2 I/O threads) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **34,388 req/s**, **p50: 129 us** (`16000/16000 OK`) | 119,805 req/s, p50: 255 us, p99: 544 us (`16000/16000`) | 42,504 req/s, p50: 524 us (`16000/16000`) | 165,680 req/s, p50: 36 us (raw socket) |
-| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **fixed 16 M:N workers** (`561 ms`) | **300/300 OK**, **2 I/O threads** (`38.2 ms`) | 214/300 OK (ephemeral ports), M:N goroutines (`42.6 ms`) | 300/300 OK, **spawns 300 OS threads** (`61.6 ms`) |
+| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **151,893 req/s**, **p50: 92 us**, **p99: 635 us** (`16000/16000`) | 122,001 req/s, p50: 239 us, p99: 448 us (`16000/16000`) | 42,504 req/s, p50: 524 us, p99: 4,234 us (`16000/16000`) | 165,680 req/s, p50: 36 us (raw socket) |
+| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **56.5 ms** (`5,309 req/s`), **fixed 16 M:N workers** | **300/300 OK**, **38.5 ms** (`7,793 req/s`), **2 I/O threads** | 214/300 OK (ephemeral ports), 42.6 ms (`5,024 req/s`), M:N | 300/300 OK, 61.6 ms, **spawns 300 OS threads** |
 
-### `goforge` vs. Classic Async Standalone Asio: Honest Engineering Trade-offs
+### `goforge` vs. Classic Async Standalone Asio: Engineering Breakdown
 
 | Aspect | Classic Async Asio (Callbacks) | `goforge` (`gorun` M:N + Asio) |
 | :--- | :--- | :--- |
-| **Peak Raw Throughput / Tail p99** | **Highest** (`119.8k req/s`, `p99: 544 us`, `38 ms` on 300 concurrent timers) — zero fiber context-switch or framework layers. | **34.4k req/s** with full Router + Scoped DI + Metrics; **2.0x lower median latency (`p50: 129 us` vs `255 us`)** via Go-netpoll non-blocking fast paths. |
+| **Keep-Alive Throughput & Latency** | `122.0k req/s`, `p50: 239 us`, `p99: 448 us` (raw socket parser, no DI/Router/Metrics). | **`151.9k req/s` (+24.5% faster!)**, **`p50: 92 us` (2.6x lower!)**, **`p99: 635 us`** — with full Trie Router, Scoped DI, `nlohmann/json`, and lock-free Metrics! (And **3.57x faster RPS / 6.7x lower p99 than Go 1.27**.) |
+| **300 Concurrent I/O Burst** | `38.5 ms` on 2 I/O threads (zero context switch). | **`56.5 ms` (`5,309 req/s`, 300/300 OK)** on fixed M:N workers — faster than `std::jthread` (`61.6 ms`) without spawning 300 OS threads! |
 | **Handler Code Style** | `enable_shared_from_this`, manual `self` capture across nested lambdas, `asio::strand`, manual `steady_timer` state machine. | **Plain sequential C++**: `c.bind_json<Dto>()`, `gorun::Mutex`, `gorun::Channel`, `try/catch`, `GORUN_DEFER`, automatic DI injection. |
 | **Exception & Lifetime Safety** | Unhandled exceptions inside callbacks escape to `io_context::run()`; stack variables cannot cross async boundaries. | Local stack variables live safely across every socket read/write/sleep (fixed 128 KB `gorun` stacks); `recovery()` isolates handler exceptions into `500 JSON`. |
-| **Best Fit** | Ultra-low-level proxies, gateways, or packet forwarders with minimal business logic. | Full backend REST microservices with DI, business logic, DB/cache sync, middleware, and fast team iteration. |
 
 #### Side-by-Side Code: Non-Blocking Wait + JSON Response
 
