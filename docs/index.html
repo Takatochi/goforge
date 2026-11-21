@@ -386,7 +386,7 @@
     <ul class="nav-list">
       <li><a href="#benchmarks">3-Way HTTP Benchmarks</a></li>
       <li><a href="#comparison">Framework Comparison</a></li>
-      <li><a href="#tests">29 Verification Tests</a></li>
+      <li><a href="#tests">35 Verification Tests</a></li>
     </ul>
   </aside>
 
@@ -396,10 +396,10 @@
     <div class="hero">
       <div class="hero-left">
         <div class="badges">
-          <span class="badge">Version: v0.1.0-alpha</span>
+          <span class="badge">Version: v0.2.0-alpha</span>
           <span class="badge">C++20 / C++23</span>
-          <span class="badge">Header-Only (Fx + Gin Style)</span>
-          <span class="badge">Powered by gorun + Standalone Asio</span>
+          <span class="badge">Header-Only (Fx + Gin + Typed JSON DTOs)</span>
+          <span class="badge">gorun + Asio + nlohmann/json</span>
           <span class="badge">Apache-2.0</span>
         </div>
         <h1>goforge — Uber Fx + Gin Ergonomics for High-Concurrency C++20</h1>
@@ -433,7 +433,7 @@
         <div class="playground-toolbar">
           <div class="playground-tabs">
             <button class="tab-btn active" onclick="loadExample(0)">01. Fx DI &amp; Lifecycle</button>
-            <button class="tab-btn" onclick="loadExample(1)">02. Gin Router &amp; DI Handlers</button>
+            <button class="tab-btn" onclick="loadExample(1)">02. Typed JSON DTOs &amp; Router</button>
             <button class="tab-btn" onclick="loadExample(2)">03. Recovery, Timeout &amp; 429</button>
             <button class="tab-btn" onclick="loadExample(3)">04. Metrics, Healthz &amp; Logs</button>
             <button class="tab-btn" onclick="loadExample(4)">05. Custom Sandbox</button>
@@ -473,7 +473,7 @@
 
         <div class="scheduler-visualizer">
           <div class="stat-pill">Backend: <strong>GCC 14.2 (x86_64 Linux)</strong></div>
-          <div class="stat-pill">Headers: <strong id="stat-header">goforge.hpp + gorun.hpp</strong></div>
+          <div class="stat-pill">Headers: <strong id="stat-header">goforge + gorun + nlohmann/json</strong></div>
           <div class="stat-pill">Exec Time: <strong id="stat-time">--</strong></div>
           <div class="stat-pill">Exit Code: <strong id="stat-exit">--</strong></div>
         </div>
@@ -520,7 +520,7 @@
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.1.0-alpha
+    GIT_TAG        v0.2.0-alpha
 )
 FetchContent_MakeAvailable(goforge)
 
@@ -592,26 +592,50 @@ app-&gt;spawn_background([](gorun::Context ctx) {
 
 app-&gt;run_until_signal(); // Handles Ctrl+C / SIGTERM with full connection draining!</code></pre>
 
-      <h3 id="guide-router">3. Gin-Style Router, Nested Groups &amp; DI-Injected Handlers</h3>
-      <p>Define routes with static priority, named parameters (<code>:id</code>), catch-all wildcards (<code>*filepath</code>), and inject any registered DI service directly in the lambda signature:</p>
-      <pre><code class="lang-cpp">auto api = router.group("/api/v1");
+      <h3 id="guide-router">3. Gin-Style Router, Typed JSON DTOs &amp; Automatic Validation</h3>
+      <p>Zero raw escaped JSON strings: declare DTOs with <code>GOFORGE_JSON_DTO</code> / <code>GOFORGE_JSON_DTO_DEFAULT</code> (including native <code>std::optional&lt;T&gt;</code>), bind &amp; validate bodies with <code>c.bind_json&lt;T&gt;()</code> (400/422 automatically), serialize structs directly via <code>c.json(200, dto)</code>, or compose inline objects with <code>goforge::H{...}</code>:</p>
+      <pre><code class="lang-cpp">struct CreateUserDto {
+    std::string name;
+    std::string email;
+    int age{0};
+    std::optional&lt;std::string&gt; bio;
+
+    std::optional&lt;std::string&gt; validate() const {
+        if (name.empty()) return "name must not be empty";
+        if (email.find('@') == std::string::npos) return "invalid email";
+        if (age &lt; 13) return "age must be &gt;= 13";
+        return std::nullopt;
+    }
+};
+GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, age, bio)
+
+struct UserDto { int id; std::string name; std::string email; int age; std::optional&lt;std::string&gt; bio; };
+GOFORGE_JSON_DTO(UserDto, id, name, email, age, bio)
+
+auto api = router.group("/api/v1");
 api.use(goforge::web::middleware::bearer_auth(validate_jwt));
 
-// Static "/users/me" always takes priority over "/users/:id"
-api.get("/users/me", [](goforge::web::HttpContext&amp; c) {
-    c.json(200, "{\"subject\":\"" + c.get&lt;std::string&gt;("auth_subject").value_or("") + "\"}");
+// POST: automatic JSON parse (400) + .validate() check (422) + DTO serialization (201)!
+api.post("/users", [](goforge::web::HttpContext&amp; c, IUserRepository&amp; repo) {
+    auto input = c.bind_json&lt;CreateUserDto&gt;();
+    if (!input) return; // Structured JSON error already sent!
+    c.json(201, repo.create(*input));
 });
 
-// Automatic DI injection of Singleton (IUserRepository&amp;) and Scoped (RequestTrace&amp;)!
+// GET: DI-injected Singleton (IUserRepository&amp;) + Scoped (RequestTrace&amp;) + c.error()!
 api.get("/users/:id", [](goforge::web::HttpContext&amp; c, IUserRepository&amp; repo, RequestTrace&amp; trace) {
-    int id = c.param_as&lt;int&gt;("id").value_or(0);
-    int page = c.query_as&lt;int&gt;("page").value_or(1);
+    auto user = repo.find(c.param_as&lt;int&gt;("id").value_or(0));
+    if (!user) {
+        c.error(404, "user_not_found", "Requested user does not exist");
+        return;
+    }
     c.set_header("X-Trace-Id", trace.id);
-    c.json(200, repo.find_json(id, page));
+    c.json(200, *user);
 });
 
-router.get("/static/*filepath", [](goforge::web::HttpContext&amp; c) {
-    c.text(200, "Serving asset: " + c.param_or("filepath"));
+// Inline Gin-style goforge::H object:
+router.get("/info", [](goforge::web::HttpContext&amp; c) {
+    c.json(200, goforge::H{{"framework", "goforge"}, {"status", "ok"}});
 });</code></pre>
 
       <h3 id="guide-middleware">4. Production Middleware Stack</h3>
@@ -760,18 +784,20 @@ health.mount(router, metrics);</code></pre>
 
     <!-- TESTS -->
     <section id="tests">
-      <h2>29 Automated Verification Tests (Stages 1–4)</h2>
+      <h2>35 Automated Verification Tests (5 Suites)</h2>
       <pre><code>Test project C:/Users/nazer/OneDrive/Desktop/goforge/build
-    Start 1: goforge_stage1_tests  (10 tests: Lifetimes, Auto-DI, Cycles, Captive, Lifecycle, BlockingPool)
-1/4 Test #1: goforge_stage1_tests .............   Passed    0.28 sec
-    Start 2: goforge_stage2_tests  (7 tests: HTTP/1.1 Keep-Alive, 300 concurrent gorun load, Zero OS blocking)
-2/4 Test #2: goforge_stage2_tests .............   Passed    0.83 sec
-    Start 3: goforge_stage3_tests  (8 tests: Trie Router, Groups, DI Handlers, Recovery, Timeout, RateLimit)
-3/4 Test #3: goforge_stage3_tests .............   Passed    0.29 sec
-    Start 4: goforge_stage4_tests  (4 tests: JSON Logger, Metrics p50/p99/Prometheus, /healthz, /readyz)
-4/4 Test #4: goforge_stage4_tests .............   Passed    0.19 sec
+    Start 1: goforge_stage1_tests      (10 tests: Lifetimes, Auto-DI, Cycles, Captive, Lifecycle, BlockingPool)
+1/5 Test #1: goforge_stage1_tests .........   Passed
+    Start 2: goforge_stage2_tests      (7 tests: HTTP/1.1 Keep-Alive, 300 concurrent gorun load, Zero OS blocking)
+2/5 Test #2: goforge_stage2_tests .........   Passed
+    Start 3: goforge_stage3_tests      (8 tests: Trie Router, Groups, DI Handlers, Recovery, Timeout, RateLimit)
+3/5 Test #3: goforge_stage3_tests .........   Passed
+    Start 4: goforge_stage4_tests      (4 tests: JSON Logger, Metrics p50/p99/Prometheus, /healthz, /readyz)
+4/5 Test #4: goforge_stage4_tests .........   Passed
+    Start 5: goforge_stage5_json_tests (6 tests: goforge::H, GOFORGE_JSON_DTO, std::optional, 400/422 validation)
+5/5 Test #5: goforge_stage5_json_tests ....   Passed
 
-100% tests passed out of 4 (29/29 assertions, 0 compiler warnings under -Wall -Wextra -Wpedantic)</code></pre>
+100% tests passed out of 5 (35/35 assertions, 0 compiler warnings under -Wall -Wextra -Wpedantic)</code></pre>
     </section>
 
     <footer>
@@ -856,36 +882,58 @@ int main() {
         ]
       },
       {
-        filename: "playground/02_gin_router_di_handlers.cpp",
+        filename: "playground/02_typed_json_dtos_and_router.cpp",
         code: `#include <iostream>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include "goforge/goforge.hpp"
 
+// 1. Typed DTOs with automatic validation (zero raw JSON string literals!)
+struct CreateUserDto {
+    std::string name;
+    std::string email;
+    int age{0};
+    std::optional<std::string> bio;
+
+    std::optional<std::string> validate() const {
+        if (name.empty()) return "name must not be empty";
+        if (email.find('@') == std::string::npos) return "email must contain '@'";
+        if (age < 13) return "age must be >= 13";
+        return std::nullopt;
+    }
+};
+GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, age, bio)
+
+struct UserDto {
+    int id{0};
+    std::string name;
+    std::string email;
+    int age{0};
+    std::optional<std::string> bio;
+};
+GOFORGE_JSON_DTO(UserDto, id, name, email, age, bio)
+
 struct UserRepo {
-    std::unordered_map<int, std::string> users{{1, "Artur Havor"}, {2, "Ada Lovelace"}};
+    int next_id{2};
+    std::unordered_map<int, UserDto> users{
+        {1, UserDto{1, "Artur Havor", "artur@goforge.dev", 25, "Creator"}}
+    };
 };
 
-struct RequestId {
-    static inline int seq = 1;
-    int value = seq++;
-};
-
-goforge::http::HttpRequest make_req(std::string method, std::string target, std::string auth = "") {
+goforge::http::HttpRequest make_req(std::string method, std::string path, std::string body = "", std::string auth = "") {
     goforge::http::HttpRequest r;
     r.method = std::move(method);
-    r.target = target;
-    auto q = target.find('?');
-    r.path = (q == std::string::npos) ? target : target.substr(0, q);
-    r.raw_query = (q == std::string::npos) ? "" : target.substr(q + 1);
+    r.target = path;
+    r.path = std::move(path);
+    r.body = std::move(body);
     if (!auth.empty()) r.headers.set("Authorization", std::move(auth));
     return r;
 }
 
 int main() {
     goforge::ServiceCollection sc;
-    sc.add_singleton<UserRepo>().add_scoped<RequestId>();
+    sc.add_singleton<UserRepo>();
     auto provider = sc.build();
 
     goforge::web::Router router;
@@ -894,31 +942,40 @@ int main() {
         return tok == "secret" ? std::optional<std::string>("admin") : std::nullopt;
     }));
 
-    // DI-injected route handler: UserRepo& (Singleton) + RequestId& (Scoped)
-    api.get("/users/:id", [](goforge::web::HttpContext& c, UserRepo& repo, RequestId& rid) {
-        int id = c.param_as<int>("id").value_or(0);
-        auto it = repo.users.find(id);
-        if (it == repo.users.end()) {
-            c.json(404, "{\\"error\\":\\"not_found\\"}");
-            return;
-        }
-        c.json(200, "{\\"req\\":" + std::to_string(rid.value) +
-                    ",\\"name\\":\\"" + it->second +
-                    "\\",\\"fmt\\":\\"" + c.query_or("fmt", "full") + "\\"}");
+    // POST /api/v1/users: automatic JSON parse (400) + .validate() (422) + DTO response (201)
+    api.post("/users", [](goforge::web::HttpContext& c, UserRepo& repo) {
+        auto dto = c.bind_json<CreateUserDto>();
+        if (!dto) return;
+        int id = repo.next_id++;
+        UserDto created{id, dto->name, dto->email, dto->age, dto->bio};
+        repo.users[id] = created;
+        c.json(201, created);
     });
 
-    auto r1 = router.dispatch(make_req("GET", "/api/v1/users/1"), gorun::background(), &provider);
-    auto r2 = router.dispatch(make_req("GET", "/api/v1/users/1?fmt=short", "Bearer secret"), gorun::background(), &provider);
-    auto r3 = router.dispatch(make_req("DELETE", "/api/v1/users/1", "Bearer secret"), gorun::background(), &provider);
+    api.get("/users/:id", [](goforge::web::HttpContext& c, UserRepo& repo) {
+        auto it = repo.users.find(c.param_as<int>("id").value_or(0));
+        if (it == repo.users.end()) {
+            c.error(404, "user_not_found", "No user with that id");
+            return;
+        }
+        c.json(200, it->second);
+    });
 
-    std::cout << "1. No token  -> HTTP " << r1.status << " " << r1.body << "\\n";
-    std::cout << "2. Valid GET -> HTTP " << r2.status << " " << r2.body << "\\n";
-    std::cout << "3. Wrong VERB-> HTTP " << r3.status << " Allow=" << r3.headers.get_or("Allow") << "\\n";
+    auto ok_body = goforge::H{{"name", "Grace Hopper"}, {"email", "grace@navy.mil"}, {"age", 40}, {"bio", "COBOL"}}.dump();
+    auto bad_body = goforge::H{{"name", "Oops"}, {"email", "invalid-email"}, {"age", 22}}.dump();
+
+    auto r1 = router.dispatch(make_req("POST", "/api/v1/users", ok_body, "Bearer secret"), gorun::background(), &provider);
+    auto r2 = router.dispatch(make_req("POST", "/api/v1/users", bad_body, "Bearer secret"), gorun::background(), &provider);
+    auto r3 = router.dispatch(make_req("GET", "/api/v1/users/2", "", "Bearer secret"), gorun::background(), &provider);
+
+    std::cout << "1. Valid POST   -> HTTP " << r1.status << " " << r1.body << "\\n";
+    std::cout << "2. Invalid DTO  -> HTTP " << r2.status << " " << r2.body << "\\n";
+    std::cout << "3. Fetch User 2 -> HTTP " << r3.status << " " << r3.body << "\\n";
 }`,
         trace: [
-          { type: "warn", text: "1. No token  -> HTTP 401 {\"error\":\"unauthorized\",\"message\":\"missing bearer token\"}" },
-          { type: "ok",   text: "2. Valid GET -> HTTP 200 {\"req\":1,\"name\":\"Artur Havor\",\"fmt\":\"short\"}" },
-          { type: "info", text: "3. Wrong VERB-> HTTP 405 Allow=GET" }
+          { type: "ok",   text: "1. Valid POST   -> HTTP 201 {\"age\":40,\"bio\":\"COBOL\",\"email\":\"grace@navy.mil\",\"id\":2,\"name\":\"Grace Hopper\"}" },
+          { type: "warn", text: "2. Invalid DTO  -> HTTP 422 {\"error\":\"validation_failed\",\"message\":\"email must contain '@'\"}" },
+          { type: "ok",   text: "3. Fetch User 2 -> HTTP 200 {\"age\":40,\"bio\":\"COBOL\",\"email\":\"grace@navy.mil\",\"id\":2,\"name\":\"Grace Hopper\"}" }
         ]
       },
       {
@@ -1017,7 +1074,7 @@ int main() {
     health.mount(router, metrics);
 
     router.get("/hello", [](goforge::web::HttpContext& c) {
-        c.json(200, "{\\"msg\\":\\"hello from goforge\\"}");
+        c.json(200, goforge::H{{"msg", "hello from goforge"}});
     });
 
     (void)router.dispatch(req("/hello"));
@@ -1056,7 +1113,7 @@ int main() {
         .provide_singleton<goforge::web::Router>()
         .invoke([](goforge::web::Router& r) {
             r.get("/hi/:name", [](goforge::web::HttpContext& c, GreetingService& svc) {
-                c.json(200, "{\\"greeting\\":\\"" + svc.greet(c.param_or("name")) + "\\"}");
+                c.json(200, goforge::H{{"greeting", svc.greet(c.param_or("name"))}});
             });
         })
         .build();
@@ -1109,7 +1166,7 @@ int main() {
 
     async function fetchFrameworkHeaders() {
       if (cachedHeaders) return cachedHeaders;
-      const [goforgeHdr, gorunHdr] = await Promise.all([
+      const [goforgeHdr, gorunHdr, nlohmannHdr] = await Promise.all([
         fetchFirstAvailable([
           './goforge.hpp',
           'https://raw.githubusercontent.com/Takatochi/goforge/main/single_include/goforge/goforge.hpp'
@@ -1117,11 +1174,15 @@ int main() {
         fetchFirstAvailable([
           './gorun.hpp',
           'https://raw.githubusercontent.com/Takatochi/gorun/main/single_include/gorun/gorun.hpp'
-        ], 'namespace gorun')
+        ], 'namespace gorun'),
+        fetchFirstAvailable([
+          './nlohmann/json.hpp',
+          'https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp'
+        ], 'namespace nlohmann')
       ]);
-      cachedHeaders = { goforgeHdr, gorunHdr };
-      const totalKb = ((goforgeHdr.length + gorunHdr.length) / 1024).toFixed(0);
-      document.getElementById('stat-header').textContent = 'goforge + gorun (' + totalKb + ' KB)';
+      cachedHeaders = { goforgeHdr, gorunHdr, nlohmannHdr };
+      const totalKb = ((goforgeHdr.length + gorunHdr.length + nlohmannHdr.length) / 1024).toFixed(0);
+      document.getElementById('stat-header').textContent = 'goforge + gorun + json (' + totalKb + ' KB)';
       return cachedHeaders;
     }
 
@@ -1143,10 +1204,10 @@ int main() {
       document.getElementById('stat-time').textContent = '...';
       document.getElementById('stat-exit').textContent = '...';
 
-      appendConsoleLine('[Compiler] Fetching goforge/goforge.hpp & gorun/gorun.hpp...', 'sched');
+      appendConsoleLine('[Compiler] Fetching goforge.hpp, gorun.hpp & nlohmann/json.hpp...', 'sched');
 
       try {
-        const { goforgeHdr, gorunHdr } = await fetchFrameworkHeaders();
+        const { goforgeHdr, gorunHdr, nlohmannHdr } = await fetchFrameworkHeaders();
         const userCode = getEditorValue();
 
         appendConsoleLine('[Compiler] Compiling on GCC 14.2.0 (' + flags + ')...', 'sched');
@@ -1162,7 +1223,8 @@ int main() {
           },
           files: [
             { filename: 'goforge/goforge.hpp', contents: goforgeHdr },
-            { filename: 'gorun/gorun.hpp', contents: gorunHdr }
+            { filename: 'gorun/gorun.hpp', contents: gorunHdr },
+            { filename: 'nlohmann/json.hpp', contents: nlohmannHdr }
           ]
         };
 

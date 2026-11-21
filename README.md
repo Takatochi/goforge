@@ -78,7 +78,7 @@ include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
-    GIT_TAG        v0.1.0-alpha
+    GIT_TAG        v0.2.0-alpha
 )
 FetchContent_MakeAvailable(goforge)
 
@@ -86,23 +86,59 @@ add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)
 ```
 
-### Complete REST Microservice Example (Fx DI + Gin Router + Observability)
+### Complete REST Microservice Example (Fx DI + Gin Router + Typed JSON DTOs + Validation)
 
 ```cpp
 #include "goforge/goforge.hpp"
 
 using namespace std::chrono_literals;
 
+struct CreateUserDto {
+    std::string name;
+    std::string email;
+    int age{0};
+    std::optional<std::string> bio;
+
+    std::optional<std::string> validate() const {
+        if (name.empty()) return "name must not be empty";
+        if (email.find('@') == std::string::npos) return "email must contain '@'";
+        if (age < 13) return "age must be >= 13";
+        return std::nullopt;
+    }
+};
+GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, age, bio)
+
+struct UserDto {
+    int id{0};
+    std::string name;
+    std::string email;
+    int age{0};
+    std::optional<std::string> bio;
+};
+GOFORGE_JSON_DTO(UserDto, id, name, email, age, bio)
+
 struct IUserRepo {
     virtual ~IUserRepo() = default;
-    virtual std::string find_json(int id) = 0;
+    virtual UserDto create(const CreateUserDto& in) = 0;
+    virtual std::optional<UserDto> find(int id) = 0;
 };
 
 struct MemoryUserRepo final : IUserRepo {
     gorun::RwMutex rw;
-    std::string find_json(int id) override {
+    int next_id{2};
+    std::unordered_map<int, UserDto> rows{{1, {1, "Artur Havor", "artur@goforge.dev", 25, "Creator"}}};
+
+    UserDto create(const CreateUserDto& in) override {
+        std::unique_lock lk(rw);
+        int id = next_id++;
+        UserDto u{id, in.name, in.email, in.age, in.bio};
+        rows[id] = u;
+        return u;
+    }
+    std::optional<UserDto> find(int id) override {
         std::shared_lock lk(rw);
-        return "{\"id\":" + std::to_string(id) + ",\"name\":\"Artur Havor\"}";
+        auto it = rows.find(id);
+        return it == rows.end() ? std::nullopt : std::optional<UserDto>(it->second);
     }
 };
 
@@ -143,11 +179,22 @@ int main() {
             auto api = router.group("/api/v1");
             api.use(goforge::web::middleware::rate_limit(256));
 
-            // DI-injected route handler: Singleton (IUserRepo&) + Scoped (RequestTrace&)
+            // POST /api/v1/users: auto JSON parse (400) + .validate() (422) + DTO response (201)
+            api.post("/users", [](goforge::web::HttpContext& c, IUserRepo& repo) {
+                auto input = c.bind_json<CreateUserDto>();
+                if (!input) return;
+                c.json(201, repo.create(*input));
+            });
+
+            // GET /api/v1/users/:id: Singleton (IUserRepo&) + Scoped (RequestTrace&) + c.error()
             api.get("/users/:id", [](goforge::web::HttpContext& c, IUserRepo& repo, RequestTrace& trace) {
-                int id = c.param_as<int>("id").value_or(0);
+                auto user = repo.find(c.param_as<int>("id").value_or(0));
+                if (!user) {
+                    c.error(404, "user_not_found", "Requested user does not exist");
+                    return;
+                }
                 c.set_header("X-Trace-Id", trace.id);
-                c.json(200, repo.find_json(id));
+                c.json(200, *user);
             });
         })
         .build();
@@ -173,7 +220,7 @@ Key takeaways:
 
 ---
 
-## Verification Test Suites (29 Automated Tests Across 4 Stages)
+## Verification Test Suites (35 Automated Tests Across 5 Suites)
 
 | Test Suite | Coverage | Result |
 | :--- | :--- | :---: |
@@ -181,6 +228,7 @@ Key takeaways:
 | [test_stage2_http.cpp](./tests/test_stage2_http.cpp) | 7 tests: HTTP/1.1 Keep-Alive, exception isolation (`500`), protocol bounds (`400`/`413`), 300 concurrent requests with `gorun` primitives, zero OS-thread blocking proof | **7/7 PASSED** |
 | [test_stage3_web.cpp](./tests/test_stage3_web.cpp) | 8 tests: Trie Router (`:param`, `*wildcard`, `404`, `405` + `Allow`), URL decoding, nested `RouteGroup`, DI handlers, `Recovery`, `Timeout` (`504`), `RateLimit` (`429`/queue), live CRUD | **8/8 PASSED** |
 | [test_stage4_prod.cpp](./tests/test_stage4_prod.cpp) | 4 tests: RFC-8259 `StructuredLogger`, `MetricsRegistry` (`p50`/`p95`/`p99`, Prometheus), `HealthRegistry` (`/healthz`, `/readyz` 200/503), live graceful draining | **4/4 PASSED** |
+| [test_stage5_json.cpp](./tests/test_stage5_json.cpp) | 6 tests: `goforge::H`, `GOFORGE_JSON_DTO` / `GOFORGE_JSON_DTO_DEFAULT`, `std::optional<T>`, `c.bind_json<T>()` (`400` / `422` auto-validation), nested collections, live TCP DTO CRUD | **6/6 PASSED** |
 
 ---
 

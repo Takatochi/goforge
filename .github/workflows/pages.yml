@@ -20,10 +20,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Stage single-header goforge.hpp, gorun.hpp, and .nojekyll for Pages
+      - name: Stage single-header goforge.hpp, gorun.hpp, nlohmann/json.hpp, and .nojekyll
         run: |
+          mkdir -p docs/nlohmann
           cp single_include/goforge/goforge.hpp docs/goforge.hpp
           curl -fsSL https://raw.githubusercontent.com/Takatochi/gorun/main/single_include/gorun/gorun.hpp -o docs/gorun.hpp
+          curl -fsSL https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp -o docs/nlohmann/json.hpp
           touch docs/.nojekyll
 
       - name: Deploy docs/ to gh-pages branch
