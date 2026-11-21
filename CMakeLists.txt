@@ -153,6 +153,9 @@ if(GOFORGE_BUILD_BENCHMARKS AND GOFORGE_ENABLE_ASIO)
     add_executable(bench_goforge_http benchmarks/bench_goforge_http.cpp)
     target_link_libraries(bench_goforge_http PRIVATE goforge::goforge)
 
+    add_executable(bench_asio_classic benchmarks/bench_asio_classic.cpp)
+    target_link_libraries(bench_asio_classic PRIVATE goforge::goforge)
+
     add_executable(bench_std_http benchmarks/bench_std_http.cpp)
     target_link_libraries(bench_std_http PRIVATE goforge::goforge)
 endif()

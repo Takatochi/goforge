@@ -666,28 +666,35 @@ health.mount(router, metrics);</code></pre>
 
     <!-- BENCHMARKS -->
     <section id="benchmarks">
-      <h2>3-Way HTTP/1.1 Performance Benchmarks</h2>
+      <h2>4-Way HTTP/1.1 Benchmarks: <code>goforge</code> vs. Classic Async Asio vs. Go 1.27 vs. <code>std::jthread</code></h2>
       <p>Measured on 16 logical CPU cores (Windows x64, <code>GCC 16.2.0 -O3</code> vs <code>go1.27.4</code>). Full source in <code>benchmarks/</code>:</p>
 
       <h3>Workload 1: Keep-Alive JSON API Median Latency (p50 in microseconds — LOWER IS BETTER)</h3>
       <div class="bench-row">
         <div class="bench-label">
           <span>Standard C++20 Raw Socket (no Router/DI/Metrics)</span>
-          <span>33 us (255,517 req/s)</span>
+          <span>36 us (165,680 req/s)</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-std" style="width: 6.3%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-std" style="width: 6.9%;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
           <span>goforge (Full Stack: HttpServer + Router + Scoped DI + Metrics)</span>
-          <span>149 us (32,226 req/s) [3.5x Lower p50 Latency than Go!]</span>
+          <span>129 us (34,388 req/s) [2.0x Lower p50 than Classic Asio, 4.1x vs Go!]</span>
         </div>
-        <div class="bar-track"><div class="bar-fill-goforge" style="width: 28.4%;"></div></div>
+        <div class="bar-track"><div class="bar-fill-goforge" style="width: 24.6%;"></div></div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label">
+          <span>Classic Async Standalone Asio (Raw Callbacks, 2 I/O threads)</span>
+          <span>255 us (119,805 req/s, p99: 544 us)</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill-go" style="width: 48.7%; background: #f59e0b;"></div></div>
       </div>
       <div class="bench-row">
         <div class="bench-label">
           <span>Native Go 1.27.4 net/http (ServeMux)</span>
-          <span>525 us (42,181 req/s)</span>
+          <span>524 us (42,504 req/s)</span>
         </div>
         <div class="bar-track"><div class="bar-fill-go" style="width: 100%;"></div></div>
       </div>
@@ -699,28 +706,39 @@ health.mount(router, metrics);</code></pre>
             <tr>
               <th>Framework / Runtime</th>
               <th>Successful Requests</th>
-              <th>OS Kernel Threads Used</th>
-              <th>Scalability Model</th>
+              <th>Wall Time</th>
+              <th>OS Kernel Threads</th>
+              <th>Code Complexity</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><strong><code>goforge</code> (C++20 + <code>gorun</code> + Asio)</strong></td>
+              <td><strong><code>goforge</code> (Full Stack + <code>gorun</code> M:N)</strong></td>
               <td><strong>300 / 300 OK</strong></td>
-              <td><strong>Fixed 16 M:N workers (+ 2 I/O)</strong></td>
-              <td>Zero thread growth at 1k–10k+ concurrent clients</td>
+              <td>561.0 ms</td>
+              <td><strong>Fixed 16 workers (+ 2 I/O)</strong></td>
+              <td>4 lines sequential C++ (DI, DTOs, Middleware)</td>
+            </tr>
+            <tr>
+              <td><strong>Classic Async Standalone Asio</strong></td>
+              <td><strong>300 / 300 OK</strong></td>
+              <td><strong>38.2 ms</strong></td>
+              <td><strong>2 I/O threads</strong></td>
+              <td>~35 lines callback state machine + <code>shared_from_this</code></td>
             </tr>
             <tr>
               <td><strong>Native Go 1.27 <code>net/http</code></strong></td>
-              <td>213 / 300 OK (Windows ephemeral port burst)</td>
+              <td>214 / 300 OK (ephemeral ports)</td>
+              <td>42.6 ms</td>
               <td>M:N goroutine pool</td>
-              <td>Lightweight goroutines</td>
+              <td>Simple sequential Go (with GC)</td>
             </tr>
             <tr>
               <td><strong>Standard C++20 (<code>std::jthread</code>)</strong></td>
               <td>300 / 300 OK</td>
+              <td>61.6 ms</td>
               <td><strong>300 OS kernel threads spawned</strong></td>
-              <td>Linear OS thread/stack exhaustion under C10K</td>
+              <td>Simple, but explodes OS threads at C10K</td>
             </tr>
           </tbody>
         </table>

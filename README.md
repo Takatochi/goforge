@@ -205,18 +205,54 @@ int main() {
 
 ---
 
-## 3-Way HTTP/1.1 Performance Benchmarks (16 Logical Cores, Windows x64)
+## 4-Way HTTP/1.1 Performance Benchmarks (16 Logical Cores, Windows x64)
 
-All three benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp)) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`):
+All four benchmark suites ([bench_goforge_http.cpp](./benchmarks/bench_goforge_http.cpp), [bench_asio_classic.cpp](./benchmarks/bench_asio_classic.cpp), [bench_go_http.go](./benchmarks/bench_go_http.go), [bench_std_http.cpp](./benchmarks/bench_std_http.cpp)) execute on the same machine (`GCC 16.2.0 -O3` vs `go1.27.4`):
 
-| Workload | `goforge` (C++20 + `gorun` M:N + Asio) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
-| :--- | :--- | :--- | :--- |
-| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **32,226 req/s**, **p50: 149 us** (`16000/16000 OK`) | 42,181 req/s, p50: 525 us (`16000/16000 OK`) | 255,517 req/s, p50: 33 us (no router/DI/metrics) |
-| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **fixed 16 OS workers** (zero thread explosion) | 213/300 OK (Windows ephemeral port burst), M:N goroutines | 300/300 OK, **spawns 300 OS kernel threads** |
+| Workload | `goforge` (Full Stack: Router + Scoped DI + Metrics) | Classic Async Asio (Raw Callbacks, 2 I/O threads) | Native Go 1.27 `net/http` | Standard C++20 (`std::jthread` per conn) |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Keep-Alive JSON API** (`32 x 500 = 16,000 reqs`) | **34,388 req/s**, **p50: 129 us** (`16000/16000 OK`) | 119,805 req/s, p50: 255 us, p99: 544 us (`16000/16000`) | 42,504 req/s, p50: 524 us (`16000/16000`) | 165,680 req/s, p50: 36 us (raw socket) |
+| **2. 300 Concurrent I/O Handlers** (`10ms` wait) | **300/300 OK**, **fixed 16 M:N workers** (`561 ms`) | **300/300 OK**, **2 I/O threads** (`38.2 ms`) | 214/300 OK (ephemeral ports), M:N goroutines (`42.6 ms`) | 300/300 OK, **spawns 300 OS threads** (`61.6 ms`) |
 
-Key takeaways:
-- `goforge` delivers **3.5x lower median latency (`p50 = 149 us` vs `525 us`)** than Go 1.27 `net/http` while executing the full framework pipeline (`Router` + per-request DI `ServiceScope` + `MetricsRegistry`).
-- Under 300 concurrent I/O-bound connections, `goforge` maintains a **fixed 16-worker M:N pool** with 0 extra OS threads, while thread-per-connection C++ spawns 300 OS kernel threads.
+### `goforge` vs. Classic Async Standalone Asio: Honest Engineering Trade-offs
+
+| Aspect | Classic Async Asio (Callbacks) | `goforge` (`gorun` M:N + Asio) |
+| :--- | :--- | :--- |
+| **Peak Raw Throughput / Tail p99** | **Highest** (`119.8k req/s`, `p99: 544 us`, `38 ms` on 300 concurrent timers) — zero fiber context-switch or framework layers. | **34.4k req/s** with full Router + Scoped DI + Metrics; **2.0x lower median latency (`p50: 129 us` vs `255 us`)** via Go-netpoll non-blocking fast paths. |
+| **Handler Code Style** | `enable_shared_from_this`, manual `self` capture across nested lambdas, `asio::strand`, manual `steady_timer` state machine. | **Plain sequential C++**: `c.bind_json<Dto>()`, `gorun::Mutex`, `gorun::Channel`, `try/catch`, `GORUN_DEFER`, automatic DI injection. |
+| **Exception & Lifetime Safety** | Unhandled exceptions inside callbacks escape to `io_context::run()`; stack variables cannot cross async boundaries. | Local stack variables live safely across every socket read/write/sleep (fixed 128 KB `gorun` stacks); `recovery()` isolates handler exceptions into `500 JSON`. |
+| **Best Fit** | Ultra-low-level proxies, gateways, or packet forwarders with minimal business logic. | Full backend REST microservices with DI, business logic, DB/cache sync, middleware, and fast team iteration. |
+
+#### Side-by-Side Code: Non-Blocking Wait + JSON Response
+
+**Classic Async Standalone Asio (~35 lines of state machine & callback wiring per route):**
+```cpp
+class Session : public std::enable_shared_from_this<Session> {
+    asio::ip::tcp::socket sock_;
+    asio::steady_timer timer_;
+    std::string write_buf_; // Must outlive async_write — cannot be a local stack variable!
+    void handle_request(bool keep_alive) {
+        auto self = shared_from_this();
+        timer_.expires_after(10ms);
+        timer_.async_wait([this, self, keep_alive](const std::error_code& ec) {
+            if (ec) return;
+            write_buf_ = HttpResponse::json(200, H{{"waited_ms", 10}}).serialize(keep_alive);
+            asio::async_write(sock_, asio::buffer(write_buf_),
+                [this, self, keep_alive](const std::error_code& wec, std::size_t) {
+                    if (!wec && keep_alive) do_read();
+                });
+        });
+    }
+};
+```
+
+**`goforge` (4 lines — same non-blocking Asio engine under the hood, zero callbacks):**
+```cpp
+router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
+    gorun::sleep_for(10ms); // Parks green routine without blocking OS workers!
+    c.json(200, goforge::H{{"waited_ms", 10}});
+});
+```
 
 ---
 
@@ -246,6 +282,7 @@ ctest --test-dir build --output-on-failure
 
 # Benchmarks:
 .\build\bench_goforge_http.exe
+.\build\bench_asio_classic.exe
 go run benchmarks\bench_go_http.go
 .\build\bench_std_http.exe
 ```
