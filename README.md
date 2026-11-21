@@ -86,17 +86,33 @@ add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)
 ```
 
-### Complete REST Microservice Example (Fx DI + Gin Router + Typed JSON DTOs + Validation)
+### Lightweight REST Microservice (`WebApp` + Zero-Lambda Controllers + Fluent Query AST)
+
+No boilerplate `AppBuilder` wiring, no raw JSON string literals, no verbose lambdas:
 
 ```cpp
 #include "goforge/goforge.hpp"
 
-using namespace std::chrono_literals;
+using namespace goforge;
+using namespace goforge::query;
+
+// Unified Model: JSON serialization + compile-time table/column reflection (ready for future ORM!)
+struct User {
+    int id{0};
+    std::string name;
+    std::string email;
+    std::string role{"user"};
+    int age{0};
+    bool active{true};
+    std::optional<std::string> bio;
+};
+GOFORGE_MODEL_TABLE(User, "users", id, name, email, role, age, active, bio)
 
 struct CreateUserDto {
     std::string name;
     std::string email;
-    int age{0};
+    std::string role{"user"};
+    int age{18};
     std::optional<std::string> bio;
 
     std::optional<std::string> validate() const {
@@ -106,101 +122,98 @@ struct CreateUserDto {
         return std::nullopt;
     }
 };
-GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, age, bio)
-
-struct UserDto {
-    int id{0};
-    std::string name;
-    std::string email;
-    int age{0};
-    std::optional<std::string> bio;
-};
-GOFORGE_JSON_DTO(UserDto, id, name, email, age, bio)
+GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, role, age, bio)
 
 struct IUserRepo {
     virtual ~IUserRepo() = default;
-    virtual UserDto create(const CreateUserDto& in) = 0;
-    virtual std::optional<UserDto> find(int id) = 0;
+    virtual User create(const CreateUserDto& in) = 0;
+    virtual std::optional<User> find(int id) const = 0;
+    virtual Page<User> search(std::string_view q, int min_age, std::size_t page, std::size_t size) const = 0;
 };
 
 struct MemoryUserRepo final : IUserRepo {
-    gorun::RwMutex rw;
+    mutable gorun::RwMutex rw;
     int next_id{2};
-    std::unordered_map<int, UserDto> rows{{1, {1, "Artur Havor", "artur@goforge.dev", 25, "Creator"}}};
+    std::unordered_map<int, User> rows{{1, {1, "Artur Havor", "artur@goforge.dev", "admin", 25, true, "Creator"}}};
 
-    UserDto create(const CreateUserDto& in) override {
+    User create(const CreateUserDto& in) override {
         std::unique_lock lk(rw);
         int id = next_id++;
-        UserDto u{id, in.name, in.email, in.age, in.bio};
+        User u{id, in.name, in.email, in.role, in.age, true, in.bio};
         rows[id] = u;
         return u;
     }
-    std::optional<UserDto> find(int id) override {
+
+    std::optional<User> find(int id) const override {
         std::shared_lock lk(rw);
-        auto it = rows.find(id);
-        return it == rows.end() ? std::nullopt : std::optional<UserDto>(it->second);
+        auto it_row = rows.find(id);
+        return it_row == rows.end() ? std::nullopt : std::optional<User>(it_row->second);
+    }
+
+    // Fluent C#/EF-style query using compile-time Expression Trees (zero lambdas!)
+    Page<User> search(std::string_view q, int min_age, std::size_t page, std::size_t size) const override {
+        std::shared_lock lk(rw);
+        auto seq = from_values(rows)
+            .where(col(&User::active) == true && col(&User::age) >= min_age);
+        if (!q.empty()) {
+            seq = seq.where(col(&User::name).icontains(q) || col(&User::email).icontains(q));
+        }
+        return seq.order_by(&User::role).then_by_desc(&User::age).paginate(page, size);
     }
 };
 
-struct RequestTrace {
-    static inline std::atomic<int> seq{1000};
-    std::string id{"req-" + std::to_string(seq.fetch_add(1))};
+// Zero-lambda Controller: resolved via Scoped DI per request, auto-extracts Body/Path/Query & serializes returns!
+struct UserController {
+    IUserRepo& repo;
+    explicit UserController(IUserRepo& r) : repo(r) {}
+
+    ApiResponse create(Body<CreateUserDto> dto) { return created(repo.create(*dto)); }      // 400/422 -> 201 JSON
+    std::optional<User> get_by_id(Path<"id", int> id) const { return repo.find(*id); }      // 200 JSON or 404 JSON
+    Page<User> list(Query<"q"> q, Query<"min_age", int> age, Query<"page", int> p) const {  // Auto paginated JSON
+        return repo.search(q.value_or(""), age.value_or(0), p.value_or(1), 20);
+    }
 };
 
 int main() {
-    auto app = goforge::AppBuilder{}
-        .provide_singleton_as<IUserRepo, MemoryUserRepo>()
-        .provide_scoped<RequestTrace>()
-        .provide_singleton<goforge::obs::StructuredLogger>()
-        .provide_singleton<goforge::obs::MetricsRegistry>()
-        .provide_singleton<goforge::obs::HealthRegistry>()
-        .provide_singleton<goforge::web::Router>()
-        .provide_instance(goforge::http::HttpServerConfig{.host = "127.0.0.1", .port = 8080, .io_threads = 2})
-        .provide([](const goforge::http::HttpServerConfig& cfg,
-                    goforge::web::Router& router,
-                    goforge::ServiceProvider& sp,
-                    goforge::Lifecycle& lc) {
-            auto srv = std::make_shared<goforge::http::HttpServer>(cfg, router.to_http_handler(&sp));
-            srv->attach_lifecycle(lc, "http-server");
-            return srv;
-        })
-        .invoke([](goforge::web::Router& router,
-                   goforge::obs::StructuredLogger& log,
-                   goforge::obs::MetricsRegistry& metrics,
-                   goforge::obs::HealthRegistry& health,
-                   goforge::http::HttpServer&) {
-            router.use(metrics.middleware());
-            router.use(goforge::web::middleware::recovery());
-            router.use(log.access_log_middleware());
-            router.use(goforge::web::middleware::timeout(100ms));
+    auto app = WebApp::create({.port = 8080, .io_threads = 2})
+        .singleton<IUserRepo, MemoryUserRepo>()
+        .use_defaults(); // recovery + metrics + JSON access log + /healthz, /readyz, /metrics
 
-            health.mount(router, metrics); // Mounts /healthz, /readyz, /metrics
+    app.controller<UserController, IUserRepo>("/api/v1/users")
+       .post("", &UserController::create)
+       .get("", &UserController::list)
+       .get("/:id", &UserController::get_by_id);
 
-            auto api = router.group("/api/v1");
-            api.use(goforge::web::middleware::rate_limit(256));
-
-            // POST /api/v1/users: auto JSON parse (400) + .validate() (422) + DTO response (201)
-            api.post("/users", [](goforge::web::HttpContext& c, IUserRepo& repo) {
-                auto input = c.bind_json<CreateUserDto>();
-                if (!input) return;
-                c.json(201, repo.create(*input));
-            });
-
-            // GET /api/v1/users/:id: Singleton (IUserRepo&) + Scoped (RequestTrace&) + c.error()
-            api.get("/users/:id", [](goforge::web::HttpContext& c, IUserRepo& repo, RequestTrace& trace) {
-                auto user = repo.find(c.param_as<int>("id").value_or(0));
-                if (!user) {
-                    c.error(404, "user_not_found", "Requested user does not exist");
-                    return;
-                }
-                c.set_header("X-Trace-Id", trace.id);
-                c.json(200, *user);
-            });
-        })
-        .build();
-
-    app->run_until_signal(); // Graceful SIGINT/SIGTERM draining + LIFO OnStop hooks!
+    app.run(); // Validates DI graph, starts Lifecycle hooks, drains gracefully on SIGINT/SIGTERM!
 }
+```
+
+### Fluent LINQ-Style Query Engine (`goforge::query`) & SQL-Ready Expression Trees
+
+Write expressive queries in C++20 without verbose `[](const User& u) { return ...; }` lambdas. Every `col(&T::field)` predicate builds a **compile-time Expression Tree (AST)** that evaluates at zero overhead in memory today and compiles directly to parameterized SQL in the upcoming EF-style `goforge::data` (`DbContext`/`DbSet<T>`) layer:
+
+```cpp
+using namespace goforge::query;
+
+// 1. Zero-lambda AST predicates, multi-key sorting, projections & pagination
+auto admins = from(users)
+    .where(col(&User::age) >= 18 && col(&User::role).in({"admin", "mod"}) && col(&User::bio).is_not_null())
+    .order_by(&User::role)
+    .then_by_desc(&User::age)
+    .select(&User::email)
+    .to_vec();
+
+// 2. Identity placeholder `it` for primitive collections (zero macros, zero lambdas)
+auto doubled = from({3, 12, 7, 25, 18})
+    .where(it >= 10 && it <= 20)
+    .order_by(it)
+    .select(it * 2)
+    .to_vec(); // -> {24, 36}
+
+// 3. Opt-in concise lambda shorthand `GF_FN` / `GF_FN2` for custom C++ logic
+auto power_users = from(users)
+    .where(GF_FN(u, u.tags.size() >= 3 && u.active))
+    .to_vec();
 ```
 
 ---
@@ -256,7 +269,7 @@ router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
 
 ---
 
-## Verification Test Suites (35 Automated Tests Across 5 Suites)
+## Verification Test Suites (40 Automated Tests Across 6 Suites)
 
 | Test Suite | Coverage | Result |
 | :--- | :--- | :---: |
@@ -265,6 +278,7 @@ router.get("/api/v1/io-wait", [](goforge::web::HttpContext& c) {
 | [test_stage3_web.cpp](./tests/test_stage3_web.cpp) | 8 tests: Trie Router (`:param`, `*wildcard`, `404`, `405` + `Allow`), URL decoding, nested `RouteGroup`, DI handlers, `Recovery`, `Timeout` (`504`), `RateLimit` (`429`/queue), live CRUD | **8/8 PASSED** |
 | [test_stage4_prod.cpp](./tests/test_stage4_prod.cpp) | 4 tests: RFC-8259 `StructuredLogger`, `MetricsRegistry` (`p50`/`p95`/`p99`, Prometheus), `HealthRegistry` (`/healthz`, `/readyz` 200/503), live graceful draining | **4/4 PASSED** |
 | [test_stage5_json.cpp](./tests/test_stage5_json.cpp) | 6 tests: `goforge::H`, `GOFORGE_JSON_DTO` / `GOFORGE_JSON_DTO_DEFAULT`, `std::optional<T>`, `c.bind_json<T>()` (`400` / `422` auto-validation), nested collections, live TCP DTO CRUD | **6/6 PASSED** |
+| [test_stage6_ergonomics_query.cpp](./tests/test_stage6_ergonomics_query.cpp) | 5 tests: `WebApp` facade, zero-lambda `ControllerGroup`, typed `Body`/`Path`/`Query`/`Header` extractors, smart returns (`Result<T>`, `optional`, `Page<T>`), fluent `goforge::query` AST + `GOFORGE_MODEL_TABLE` reflection + live TCP roundtrip | **5/5 PASSED** |
 
 ---
 
@@ -279,6 +293,7 @@ ctest --test-dir build --output-on-failure
 .\build\goforge_example_01_di.exe
 .\build\goforge_example_02_http.exe          # self-test (or --serve on :8080)
 .\build\goforge_example_03_rest.exe          # full Fx + Gin REST API (or --serve on :8080)
+.\build\goforge_example_04_ergonomic.exe     # lightweight WebApp + Controllers + Fluent Query AST
 
 # Benchmarks:
 .\build\bench_goforge_http.exe

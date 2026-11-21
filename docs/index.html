@@ -432,11 +432,12 @@
       <div class="playground-shell">
         <div class="playground-toolbar">
           <div class="playground-tabs">
-            <button class="tab-btn active" onclick="loadExample(0)">01. Fx DI &amp; Lifecycle</button>
-            <button class="tab-btn" onclick="loadExample(1)">02. Typed JSON DTOs &amp; Router</button>
-            <button class="tab-btn" onclick="loadExample(2)">03. Recovery, Timeout &amp; 429</button>
-            <button class="tab-btn" onclick="loadExample(3)">04. Metrics, Healthz &amp; Logs</button>
-            <button class="tab-btn" onclick="loadExample(4)">05. Custom Sandbox</button>
+            <button class="tab-btn active" onclick="loadExample(0)">01. WebApp, Controllers &amp; Query</button>
+            <button class="tab-btn" onclick="loadExample(1)">02. Fx DI &amp; Lifecycle</button>
+            <button class="tab-btn" onclick="loadExample(2)">03. Typed JSON DTOs &amp; Router</button>
+            <button class="tab-btn" onclick="loadExample(3)">04. Recovery, Timeout &amp; 429</button>
+            <button class="tab-btn" onclick="loadExample(4)">05. Metrics, Healthz &amp; Logs</button>
+            <button class="tab-btn" onclick="loadExample(5)">06. Custom Sandbox</button>
           </div>
           <div class="playground-actions">
             <select id="pg-flags" class="compiler-select" title="Compiler Flags">
@@ -592,51 +593,46 @@ app-&gt;spawn_background([](gorun::Context ctx) {
 
 app-&gt;run_until_signal(); // Handles Ctrl+C / SIGTERM with full connection draining!</code></pre>
 
-      <h3 id="guide-router">3. Gin-Style Router, Typed JSON DTOs &amp; Automatic Validation</h3>
-      <p>Zero raw escaped JSON strings: declare DTOs with <code>GOFORGE_JSON_DTO</code> / <code>GOFORGE_JSON_DTO_DEFAULT</code> (including native <code>std::optional&lt;T&gt;</code>), bind &amp; validate bodies with <code>c.bind_json&lt;T&gt;()</code> (400/422 automatically), serialize structs directly via <code>c.json(200, dto)</code>, or compose inline objects with <code>goforge::H{...}</code>:</p>
-      <pre><code class="lang-cpp">struct CreateUserDto {
-    std::string name;
-    std::string email;
-    int age{0};
-    std::optional&lt;std::string&gt; bio;
+      <h3 id="guide-router">3. Ergonomic <code>WebApp</code>, Zero-Lambda Controllers &amp; Fluent Query AST</h3>
+      <p>Skip boilerplate wiring and verbose C++ lambdas: bind controller methods directly with typed extractors (<code>Body&lt;T&gt;</code>, <code>Path&lt;"id", int&gt;</code>, <code>Query&lt;"q"&gt;</code>, <code>Header&lt;"X-Api-Key"&gt;</code>), return DTOs / <code>std::optional&lt;T&gt;</code> / <code>Page&lt;T&gt;</code> directly, and query data with C#/EF-style compile-time Expression Trees (<code>col(&amp;User::age) &gt;= 18</code>, <code>it &gt; 10</code>, or <code>GF_FN</code>):</p>
+      <pre><code class="lang-cpp">using namespace goforge;
+using namespace goforge::query;
 
-    std::optional&lt;std::string&gt; validate() const {
-        if (name.empty()) return "name must not be empty";
-        if (email.find('@') == std::string::npos) return "invalid email";
-        if (age &lt; 13) return "age must be &gt;= 13";
-        return std::nullopt;
+struct User {
+    int id{0};
+    std::string name, email, role{"user"};
+    int age{0};
+    bool active{true};
+    std::optional&lt;std::string&gt; bio;
+};
+GOFORGE_MODEL_TABLE(User, "users", id, name, email, role, age, active, bio)
+
+struct UserController {
+    IUserRepo&amp; repo;
+    explicit UserController(IUserRepo&amp; r) : repo(r) {}
+
+    ApiResponse create(Body&lt;CreateUserDto&gt; dto) { return created(repo.create(*dto)); }
+    std::optional&lt;User&gt; get(Path&lt;"id", int&gt; id) const { return repo.find(*id); }
+    Page&lt;User&gt; list(Query&lt;"q"&gt; q, Query&lt;"min_age", int&gt; min_age) const {
+        return from(repo.all())
+            .where(col(&amp;User::active) == true &amp;&amp; col(&amp;User::age) &gt;= min_age.value_or(0))
+            .where(col(&amp;User::name).icontains(q.value_or("")))
+            .order_by(&amp;User::role)
+            .then_by_desc(&amp;User::age)
+            .paginate(1, 20); // Auto-serializes to paginated JSON!
     }
 };
-GOFORGE_JSON_DTO_DEFAULT(CreateUserDto, name, email, age, bio)
 
-struct UserDto { int id; std::string name; std::string email; int age; std::optional&lt;std::string&gt; bio; };
-GOFORGE_JSON_DTO(UserDto, id, name, email, age, bio)
+auto app = WebApp::create({.port = 8080})
+    .singleton&lt;IUserRepo, MemoryUserRepo&gt;()
+    .use_defaults();
 
-auto api = router.group("/api/v1");
-api.use(goforge::web::middleware::bearer_auth(validate_jwt));
+app.controller&lt;UserController, IUserRepo&gt;("/api/v1/users")
+   .post("", &amp;UserController::create)
+   .get("", &amp;UserController::list)
+   .get("/:id", &amp;UserController::get);
 
-// POST: automatic JSON parse (400) + .validate() check (422) + DTO serialization (201)!
-api.post("/users", [](goforge::web::HttpContext&amp; c, IUserRepository&amp; repo) {
-    auto input = c.bind_json&lt;CreateUserDto&gt;();
-    if (!input) return; // Structured JSON error already sent!
-    c.json(201, repo.create(*input));
-});
-
-// GET: DI-injected Singleton (IUserRepository&amp;) + Scoped (RequestTrace&amp;) + c.error()!
-api.get("/users/:id", [](goforge::web::HttpContext&amp; c, IUserRepository&amp; repo, RequestTrace&amp; trace) {
-    auto user = repo.find(c.param_as&lt;int&gt;("id").value_or(0));
-    if (!user) {
-        c.error(404, "user_not_found", "Requested user does not exist");
-        return;
-    }
-    c.set_header("X-Trace-Id", trace.id);
-    c.json(200, *user);
-});
-
-// Inline Gin-style goforge::H object:
-router.get("/info", [](goforge::web::HttpContext&amp; c) {
-    c.json(200, goforge::H{{"framework", "goforge"}, {"status", "ok"}});
-});</code></pre>
+app.run();</code></pre>
 
       <h3 id="guide-middleware">4. Production Middleware Stack</h3>
       <pre><code class="lang-cpp">router.use(metrics.middleware());                          // Tracks RPS, 2xx/4xx/5xx, p50/p95/p99
@@ -828,7 +824,91 @@ health.mount(router, metrics);</code></pre>
   <script>
     const EXAMPLES = [
       {
-        filename: "playground/01_fx_di_lifecycle.cpp",
+        filename: "playground/01_webapp_controllers_query.cpp",
+        code: `#include <iostream>
+#include <optional>
+#include <string>
+#include <vector>
+#include "goforge/goforge.hpp"
+
+using namespace goforge;
+using namespace goforge::query;
+
+// Unified Model: JSON DTO + compile-time table/column reflection (ready for future ORM!)
+struct User {
+    int id{0};
+    std::string name, email, role{"user"};
+    int age{0};
+    bool active{true};
+    std::optional<std::string> bio;
+};
+GOFORGE_MODEL_TABLE(User, "users", id, name, email, role, age, active, bio)
+
+struct UserRepo {
+    std::vector<User> rows{
+        {1, "Artur",  "artur@goforge.dev",  "admin", 25, true, "Creator"},
+        {2, "Olena",  "olena@goforge.dev",  "admin", 31, true, std::nullopt},
+        {3, "Bohdan", "bohdan@goforge.dev", "user",  22, true, "C++ Dev"},
+        {4, "Ivan",   "ivan@goforge.dev",   "mod",   19, false, std::nullopt}
+    };
+};
+
+// Zero-lambda Controller: DI injects UserRepo&, extractors parse Path/Query, returns auto-serialize!
+struct UserController {
+    UserRepo& repo;
+    explicit UserController(UserRepo& r) : repo(r) {}
+
+    Page<User> list(Query<"min_age", int> min_age, Query<"q"> q) const {
+        auto seq = from(repo.rows)
+            .where(col(&User::active) == true && col(&User::age) >= min_age.value_or(0));
+        if (q.has_value()) {
+            seq = seq.where(col(&User::name).icontains(*q));
+        }
+        return seq.order_by(&User::role).then_by_desc(&User::age).paginate(1, 10);
+    }
+
+    std::optional<User> get(Path<"id", int> id) const {
+        return from(repo.rows).first(col(&User::id) == *id);
+    }
+};
+
+int main() {
+    auto app = WebApp::create()
+        .singleton<UserRepo>()
+        .use_defaults(false);
+
+    app.controller<UserController, UserRepo>("/api/v1/users")
+       .get("", &UserController::list)
+       .get("/:id", &UserController::get);
+
+    // Fluent Query AST with identity placeholder 'it' (zero lambdas!)
+    auto doubled = from({3, 12, 7, 25, 18})
+        .where(it >= 10 && it <= 20)
+        .order_by(it)
+        .select(it * 2)
+        .to_vec();
+    std::cout << "[Query it]   " << Json(doubled).dump() << "\\n";
+    std::cout << "[Reflection] table=" << table_name_of<User>()
+              << ", col(&User::age)=" << col(&User::age).name << "\\n";
+
+    http::HttpRequest r1; r1.method = "GET"; r1.path = "/api/v1/users"; r1.raw_query = "min_age=23";
+    http::HttpRequest r2; r2.method = "GET"; r2.path = "/api/v1/users/1";
+    http::HttpRequest r3; r3.method = "GET"; r3.path = "/api/v1/users/999";
+
+    std::cout << "[GET list]   HTTP " << app.dispatch(r1).status << " " << app.dispatch(r1).body << "\\n";
+    std::cout << "[GET /1]     HTTP " << app.dispatch(r2).status << " " << app.dispatch(r2).body << "\\n";
+    std::cout << "[GET /999]   HTTP " << app.dispatch(r3).status << " " << app.dispatch(r3).body << "\\n";
+}`,
+        trace: [
+          { type: "info", text: "[Query it]   [24,36]" },
+          { type: "sched",text: "[Reflection] table=users, col(&User::age)=age" },
+          { type: "ok",   text: "[GET list]   HTTP 200 {\"has_next\":false,\"has_prev\":false,\"items\":[{\"active\":true,\"age\":31,...},{\"active\":true,\"age\":25,...}],\"page\":1,\"page_size\":10,\"total\":2,\"total_pages\":1}" },
+          { type: "ok",   text: "[GET /1]     HTTP 200 {\"active\":true,\"age\":25,\"bio\":\"Creator\",\"email\":\"artur@goforge.dev\",\"id\":1,\"name\":\"Artur\",\"role\":\"admin\"}" },
+          { type: "warn", text: "[GET /999]   HTTP 404 {\"error\":\"not_found\"}" }
+        ]
+      },
+      {
+        filename: "playground/02_fx_di_lifecycle.cpp",
         code: `#include <iostream>
 #include <memory>
 #include <string>

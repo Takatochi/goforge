@@ -189,6 +189,1193 @@ BindResult<T> parse_and_validate_json(std::string_view body) {
 
 } // namespace goforge
 // ---- end goforge/json.hpp ----
+// ---- begin goforge/query.hpp ----
+
+/**
+ * @file query.hpp
+ * @brief Fluent C# / EF-style Query Engine (`goforge::query`) with Compile-Time Expression Trees (AST),
+ *        member-pointer selectors, `it` placeholder expressions, opt-in short lambda macros (`GF_FN`),
+ *        entity column reflection (`GOFORGE_MODEL`), and JSON-ready pagination (`Page<T>`).
+ *
+ * Designed as a unified query foundation:
+ * - Today: zero-overhead fluent in-memory querying (`from(users).where(col(&User::age) >= 18).order_by(&User::name).to_vec()`).
+ * - Future (`goforge::data`): the exact same compile-time AST (`ColExpr`, `CmpExpr`, `LogicExpr`, `StrExpr`,
+ *   `InExpr`, `BetweenExpr`, `NullCheckExpr`, `EntityMeta<T>`) compiles directly to parameterized SQL for an
+ *   Entity Framework-style `DbContext` / `DbSet<T>`.
+ */
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <concepts>
+#include <cstddef>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <numeric>
+#include <optional>
+#include <ranges>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+
+
+// ============================================================================
+// Opt-in Concise Lambda Shorthand Macros (zero runtime overhead)
+// ============================================================================
+
+/// Concise single-parameter expression lambda: `GF_FN(u, u.age >= 18 && u.active)`
+#ifndef GF_FN
+#define GF_FN(param, expr) [&](const auto& param) { return (expr); }
+#endif
+
+/// Concise two-parameter expression lambda: `GF_FN2(acc, u, acc + u.score)`
+#ifndef GF_FN2
+#define GF_FN2(p1, p2, expr) [&](const auto& p1, const auto& p2) { return (expr); }
+#endif
+
+/// Concise mutable action lambda: `GF_ACT(u, u.score += 10)`
+#ifndef GF_ACT
+#define GF_ACT(param, ...) [&](auto& param) { __VA_ARGS__; }
+#endif
+
+// ============================================================================
+// Preprocessor Foreach Helpers for GOFORGE_MODEL (pure standard C++20, up to 24 fields)
+// ============================================================================
+#define GOFORGE_PP_EXPAND(x) x
+#define GOFORGE_PP_NARG(...) GOFORGE_PP_EXPAND(GOFORGE_PP_NARG_IMPL(__VA_ARGS__, \
+    24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0))
+#define GOFORGE_PP_NARG_IMPL( \
+    _1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,_17,_18,_19,_20,_21,_22,_23,_24,N,...) N
+
+#define GOFORGE_PP_CAT(a, b) GOFORGE_PP_CAT_IMPL(a, b)
+#define GOFORGE_PP_CAT_IMPL(a, b) a##b
+
+#define GOFORGE_PP_FE_1(m, t, x) m(t, x)
+#define GOFORGE_PP_FE_2(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_1(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_3(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_2(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_4(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_3(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_5(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_4(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_6(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_5(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_7(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_6(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_8(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_7(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_9(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_8(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_10(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_9(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_11(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_10(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_12(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_11(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_13(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_12(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_14(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_13(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_15(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_14(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_16(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_15(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_17(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_16(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_18(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_17(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_19(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_18(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_20(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_19(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_21(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_20(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_22(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_21(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_23(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_22(m, t, __VA_ARGS__))
+#define GOFORGE_PP_FE_24(m, t, x, ...) m(t, x), GOFORGE_PP_EXPAND(GOFORGE_PP_FE_23(m, t, __VA_ARGS__))
+
+#define GOFORGE_PP_FOR_EACH(m, t, ...) \
+    GOFORGE_PP_EXPAND(GOFORGE_PP_CAT(GOFORGE_PP_FE_, GOFORGE_PP_NARG(__VA_ARGS__))(m, t, __VA_ARGS__))
+
+#define GOFORGE_MODEL_FIELD_PAIR(Type, field) \
+    ::goforge::query::TypedField<Type, decltype(Type::field)>{#field, &Type::field}
+
+namespace goforge::query {
+
+// ============================================================================
+// Entity Metadata (Compile-Time Reflection for Query AST & Future SQL ORM)
+// ============================================================================
+
+template <typename Obj, typename MemberT>
+struct TypedField {
+    std::string_view name;
+    MemberT Obj::* ptr;
+};
+
+template <typename Obj>
+struct EntityMeta {
+    static constexpr bool registered = false;
+    static constexpr std::string_view table_name = "";
+    static constexpr std::tuple<> fields() noexcept { return {}; }
+};
+
+/// Resolves the compile-time column name of a member pointer if `Obj` was declared with `GOFORGE_MODEL`.
+template <typename Obj, typename MemberT>
+constexpr std::string_view column_name_of(MemberT Obj::* ptr) noexcept {
+    if constexpr (EntityMeta<Obj>::registered) {
+        std::string_view found{};
+        std::apply([&](const auto&... f) {
+            (([&] {
+                if constexpr (std::is_same_v<decltype(f.ptr), MemberT Obj::*>) {
+                    if (f.ptr == ptr) {
+                        found = f.name;
+                    }
+                }
+            }()), ...);
+        }, EntityMeta<Obj>::fields());
+        return found;
+    }
+    return {};
+}
+
+/// Returns the table name of `Obj` if declared with `GOFORGE_MODEL` / `GOFORGE_MODEL_TABLE`.
+template <typename Obj>
+constexpr std::string_view table_name_of() noexcept {
+    return EntityMeta<Obj>::table_name;
+}
+
+// ============================================================================
+// Compile-Time Expression Tree (AST) — Unified In-Memory & Future SQL Contract
+// ============================================================================
+
+struct ExprBase {};
+
+template <typename T>
+concept IsExpr = std::derived_from<std::remove_cvref_t<T>, ExprBase>;
+
+enum class CmpOp : std::uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
+enum class LogicOp : std::uint8_t { And, Or };
+enum class StrOp : std::uint8_t { Contains, IContains, StartsWith, EndsWith };
+enum class ArithOp : std::uint8_t { Add, Sub, Mul, Div };
+
+namespace detail {
+
+template <typename T>
+struct IsOptional : std::false_type {};
+
+template <typename T>
+struct IsOptional<std::optional<T>> : std::true_type {};
+
+inline std::string_view to_sv(const std::string& s) noexcept { return s; }
+inline std::string_view to_sv(std::string_view sv) noexcept { return sv; }
+inline std::string_view to_sv(const char* s) noexcept { return s ? std::string_view(s) : std::string_view{}; }
+
+template <typename T>
+inline std::optional<std::string_view> to_opt_sv(const std::optional<T>& opt) noexcept {
+    if (!opt.has_value()) return std::nullopt;
+    return to_sv(*opt);
+}
+
+template <typename T>
+inline std::optional<std::string_view> to_opt_sv(const T& v) noexcept {
+    return to_sv(v);
+}
+
+inline bool icontains_sv(std::string_view hay, std::string_view needle) noexcept {
+    if (needle.empty()) return true;
+    if (needle.size() > hay.size()) return false;
+    auto it = std::search(
+        hay.begin(), hay.end(),
+        needle.begin(), needle.end(),
+        [](char a, char b) {
+            return std::tolower(static_cast<unsigned char>(a)) ==
+                   std::tolower(static_cast<unsigned char>(b));
+        }
+    );
+    return it != hay.end();
+}
+
+template <typename A, typename B>
+constexpr bool compare_values(CmpOp op, const A& a, const B& b) {
+    if constexpr (IsOptional<std::remove_cvref_t<A>>::value && !IsOptional<std::remove_cvref_t<B>>::value) {
+        if (!a.has_value()) return op == CmpOp::Ne;
+        return compare_values(op, *a, b);
+    } else if constexpr (!IsOptional<std::remove_cvref_t<A>>::value && IsOptional<std::remove_cvref_t<B>>::value) {
+        if (!b.has_value()) return op == CmpOp::Ne;
+        return compare_values(op, a, *b);
+    } else {
+        switch (op) {
+            case CmpOp::Eq: return a == b;
+            case CmpOp::Ne: return a != b;
+            case CmpOp::Lt: return a < b;
+            case CmpOp::Le: return a <= b;
+            case CmpOp::Gt: return a > b;
+            case CmpOp::Ge: return a >= b;
+        }
+        return false;
+    }
+}
+
+template <typename T>
+auto normalize_literal(T&& v) {
+    using NoRef = std::remove_reference_t<T>;
+    using Clean = std::decay_t<T>;
+    if constexpr (std::is_array_v<NoRef> && std::is_same_v<std::remove_cv_t<std::remove_extent_t<NoRef>>, char>) {
+        return std::string(v);
+    } else if constexpr (std::is_same_v<Clean, const char*> || std::is_same_v<Clean, char*>) {
+        return v ? std::string(v) : std::string{};
+    } else if constexpr (std::is_same_v<Clean, std::string_view>) {
+        return std::string(v);
+    } else {
+        return std::forward<T>(v);
+    }
+}
+
+} // namespace detail
+
+/// AST literal value leaf node (exposes `.value` for future SQL bind parameter extraction).
+template <typename T>
+struct LiteralExpr : ExprBase {
+    T value;
+
+    constexpr explicit LiteralExpr(T v) : value(std::move(v)) {}
+
+    template <typename Elem>
+    constexpr const T& eval(const Elem&) const noexcept {
+        return value;
+    }
+};
+
+template <typename T>
+auto wrap_expr(T&& x) {
+    if constexpr (IsExpr<T>) {
+        return std::forward<T>(x);
+    } else {
+        auto lit = detail::normalize_literal(std::forward<T>(x));
+        return LiteralExpr<std::decay_t<decltype(lit)>>(std::move(lit));
+    }
+}
+
+/// AST comparison node (`lhs <op> rhs`).
+template <CmpOp Op, typename Lhs, typename Rhs>
+struct CmpExpr : ExprBase {
+    static constexpr CmpOp op = Op;
+    Lhs lhs;
+    Rhs rhs;
+
+    template <typename Elem>
+    constexpr bool eval(const Elem& elem) const {
+        return detail::compare_values(Op, lhs.eval(elem), rhs.eval(elem));
+    }
+
+    template <typename Elem>
+    constexpr bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST logical node (`lhs && rhs` or `lhs || rhs`).
+template <LogicOp Op, typename Lhs, typename Rhs>
+struct LogicExpr : ExprBase {
+    static constexpr LogicOp op = Op;
+    Lhs lhs;
+    Rhs rhs;
+
+    template <typename Elem>
+    constexpr bool eval(const Elem& elem) const {
+        if constexpr (Op == LogicOp::And) {
+            return static_cast<bool>(lhs.eval(elem)) && static_cast<bool>(rhs.eval(elem));
+        } else {
+            return static_cast<bool>(lhs.eval(elem)) || static_cast<bool>(rhs.eval(elem));
+        }
+    }
+
+    template <typename Elem>
+    constexpr bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST logical negation node (`!inner`).
+template <typename Inner>
+struct NotExpr : ExprBase {
+    Inner inner;
+
+    template <typename Elem>
+    constexpr bool eval(const Elem& elem) const {
+        return !static_cast<bool>(inner.eval(elem));
+    }
+
+    template <typename Elem>
+    constexpr bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST arithmetic node (`lhs + rhs`, `-`, `*`, `/`).
+template <ArithOp Op, typename Lhs, typename Rhs>
+struct ArithExpr : ExprBase {
+    static constexpr ArithOp op = Op;
+    Lhs lhs;
+    Rhs rhs;
+
+    template <typename Elem>
+    constexpr auto eval(const Elem& elem) const {
+        if constexpr (Op == ArithOp::Add) return lhs.eval(elem) + rhs.eval(elem);
+        else if constexpr (Op == ArithOp::Sub) return lhs.eval(elem) - rhs.eval(elem);
+        else if constexpr (Op == ArithOp::Mul) return lhs.eval(elem) * rhs.eval(elem);
+        else return lhs.eval(elem) / rhs.eval(elem);
+    }
+
+    template <typename Elem>
+    constexpr auto operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST string predicate node (`LIKE '%...%'`, `LIKE '...%'`, `LIKE '%...'`, case-insensitive contains).
+template <StrOp Op, typename Target>
+struct StrExpr : ExprBase {
+    static constexpr StrOp op = Op;
+    Target target;
+    std::string pattern;
+
+    template <typename Elem>
+    bool eval(const Elem& elem) const {
+        auto opt_sv = detail::to_opt_sv(target.eval(elem));
+        if (!opt_sv.has_value()) return false;
+        std::string_view s = *opt_sv;
+        if constexpr (Op == StrOp::Contains) {
+            return s.find(pattern) != std::string_view::npos;
+        } else if constexpr (Op == StrOp::IContains) {
+            return detail::icontains_sv(s, pattern);
+        } else if constexpr (Op == StrOp::StartsWith) {
+            return s.starts_with(pattern);
+        } else {
+            return s.ends_with(pattern);
+        }
+    }
+
+    template <typename Elem>
+    bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST set-membership node (`IN (...)` / `NOT IN (...)`).
+template <typename Target, typename ValT, bool Negated = false>
+struct InExpr : ExprBase {
+    static constexpr bool negated = Negated;
+    Target target;
+    std::vector<ValT> values;
+
+    template <typename Elem>
+    bool eval(const Elem& elem) const {
+        const auto& v = target.eval(elem);
+        bool found = false;
+        for (const auto& candidate : values) {
+            if (detail::compare_values(CmpOp::Eq, v, candidate)) {
+                found = true;
+                break;
+            }
+        }
+        return Negated ? !found : found;
+    }
+
+    template <typename Elem>
+    bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST inclusive range node (`BETWEEN lo AND hi`).
+template <typename Target, typename LoT, typename HiT>
+struct BetweenExpr : ExprBase {
+    Target target;
+    LoT lo;
+    HiT hi;
+
+    template <typename Elem>
+    constexpr bool eval(const Elem& elem) const {
+        const auto& v = target.eval(elem);
+        return detail::compare_values(CmpOp::Ge, v, lo) &&
+               detail::compare_values(CmpOp::Le, v, hi);
+    }
+
+    template <typename Elem>
+    constexpr bool operator()(const Elem& elem) const {
+        return eval(elem);
+    }
+};
+
+/// AST nullability node (`IS NULL` / `IS NOT NULL` for `std::optional<T>` fields).
+template <typename Target, bool ExpectNull>
+struct NullCheckExpr : ExprBase {
+    static constexpr bool expect_null = ExpectNull;
+    Target target;
+
+    template <typename Elem>
+    constexpr bool eval(const Elem& elem) const noexcept {
+        const auto& v = target.eval(elem);
+        if constexpr (detail::IsOptional<std::remove_cvref_t<decltype(v)>>::value) {
+            return ExpectNull ? !v.has_value() : v.has_value();
+        } else {
+            return !ExpectNull;
+        }
+    }
+
+    template <typename Elem>
+    constexpr bool operator()(const Elem& elem) const noexcept {
+        return eval(elem);
+    }
+};
+
+/// Mixin giving `ColExpr` and `IdentityExpr` fluent predicate methods (`.contains()`, `.in()`, `.between()`, `.is_null()`).
+template <typename Derived>
+struct ExprMethods : ExprBase {
+    const Derived& self() const noexcept { return static_cast<const Derived&>(*this); }
+
+    StrExpr<StrOp::Contains, Derived> contains(std::string_view s) const {
+        return StrExpr<StrOp::Contains, Derived>{{}, self(), std::string(s)};
+    }
+
+    StrExpr<StrOp::IContains, Derived> icontains(std::string_view s) const {
+        return StrExpr<StrOp::IContains, Derived>{{}, self(), std::string(s)};
+    }
+
+    StrExpr<StrOp::StartsWith, Derived> starts_with(std::string_view s) const {
+        return StrExpr<StrOp::StartsWith, Derived>{{}, self(), std::string(s)};
+    }
+
+    StrExpr<StrOp::EndsWith, Derived> ends_with(std::string_view s) const {
+        return StrExpr<StrOp::EndsWith, Derived>{{}, self(), std::string(s)};
+    }
+
+    template <typename V>
+    auto in(std::initializer_list<V> list) const {
+        using StoredT = std::decay_t<decltype(detail::normalize_literal(std::declval<V>()))>;
+        std::vector<StoredT> vals;
+        vals.reserve(list.size());
+        for (const auto& item : list) vals.push_back(detail::normalize_literal(item));
+        return InExpr<Derived, StoredT, false>{{}, self(), std::move(vals)};
+    }
+
+    template <typename V>
+    auto in(std::vector<V> vals) const {
+        return InExpr<Derived, V, false>{{}, self(), std::move(vals)};
+    }
+
+    template <typename V>
+    auto not_in(std::initializer_list<V> list) const {
+        using StoredT = std::decay_t<decltype(detail::normalize_literal(std::declval<V>()))>;
+        std::vector<StoredT> vals;
+        vals.reserve(list.size());
+        for (const auto& item : list) vals.push_back(detail::normalize_literal(item));
+        return InExpr<Derived, StoredT, true>{{}, self(), std::move(vals)};
+    }
+
+    template <typename Lo, typename Hi>
+    auto between(Lo&& lo, Hi&& hi) const {
+        auto lo_n = detail::normalize_literal(std::forward<Lo>(lo));
+        auto hi_n = detail::normalize_literal(std::forward<Hi>(hi));
+        return BetweenExpr<Derived, std::decay_t<decltype(lo_n)>, std::decay_t<decltype(hi_n)>>{
+            {}, self(), std::move(lo_n), std::move(hi_n)
+        };
+    }
+
+    NullCheckExpr<Derived, true> is_null() const noexcept {
+        return NullCheckExpr<Derived, true>{{}, self()};
+    }
+
+    NullCheckExpr<Derived, false> is_not_null() const noexcept {
+        return NullCheckExpr<Derived, false>{{}, self()};
+    }
+};
+
+/// AST column/field descriptor node (`col(&User::age)`). Carries both member pointer & column name for SQL.
+template <typename Obj, typename MemberT>
+struct ColExpr : ExprMethods<ColExpr<Obj, MemberT>> {
+    using object_type = Obj;
+    using member_type = MemberT;
+
+    MemberT Obj::* ptr;
+    std::string_view name{};
+
+    constexpr ColExpr(MemberT Obj::* p, std::string_view col_name = {}) noexcept
+        : ptr(p), name(col_name) {}
+
+    constexpr const MemberT& eval(const Obj& obj) const noexcept {
+        return obj.*ptr;
+    }
+
+    constexpr const MemberT& operator()(const Obj& obj) const noexcept {
+        return obj.*ptr;
+    }
+};
+
+/// AST identity node (`it`) for querying primitive/value collections (`from(nums).where(it > 10)`).
+struct IdentityExpr : ExprMethods<IdentityExpr> {
+    template <typename T>
+    constexpr const T& eval(const T& x) const noexcept {
+        return x;
+    }
+
+    template <typename T>
+    constexpr const T& operator()(const T& x) const noexcept {
+        return x;
+    }
+};
+
+/// Global identity placeholder for primitive/value expressions: `from(nums).where(it > 5 && it < 20)`.
+inline constexpr IdentityExpr it{};
+
+/// Creates a compile-time `ColExpr` AST node for a struct field (auto-attaches column name if `GOFORGE_MODEL` was used).
+template <typename Obj, typename MemberT>
+constexpr ColExpr<Obj, MemberT> col(MemberT Obj::* ptr, std::string_view custom_name = {}) noexcept {
+    return ColExpr<Obj, MemberT>(ptr, custom_name.empty() ? column_name_of(ptr) : custom_name);
+}
+
+/// Alias for `col(&Type::member)`.
+template <typename Obj, typename MemberT>
+constexpr ColExpr<Obj, MemberT> field(MemberT Obj::* ptr, std::string_view custom_name = {}) noexcept {
+    return col(ptr, custom_name);
+}
+
+// ---- Comparison Operators on AST Expressions ----
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator==(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Eq, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator!=(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Ne, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator<(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Lt, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator<=(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Le, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator>(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Gt, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator>=(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return CmpExpr<CmpOp::Ge, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+// ---- Logical Operators on AST Expressions ----
+template <IsExpr L, IsExpr R>
+auto operator&&(L&& l, R&& r) {
+    return LogicExpr<LogicOp::And, std::decay_t<L>, std::decay_t<R>>{{}, std::forward<L>(l), std::forward<R>(r)};
+}
+
+template <IsExpr L, IsExpr R>
+auto operator||(L&& l, R&& r) {
+    return LogicExpr<LogicOp::Or, std::decay_t<L>, std::decay_t<R>>{{}, std::forward<L>(l), std::forward<R>(r)};
+}
+
+template <IsExpr E>
+auto operator!(E&& e) {
+    return NotExpr<std::decay_t<E>>{{}, std::forward<E>(e)};
+}
+
+// ---- Arithmetic Operators on AST Expressions ----
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator+(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return ArithExpr<ArithOp::Add, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator-(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return ArithExpr<ArithOp::Sub, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator*(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return ArithExpr<ArithOp::Mul, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+template <typename L, typename R> requires (IsExpr<L> || IsExpr<R>)
+auto operator/(L&& l, R&& r) {
+    auto wl = wrap_expr(std::forward<L>(l));
+    auto wr = wrap_expr(std::forward<R>(r));
+    return ArithExpr<ArithOp::Div, decltype(wl), decltype(wr)>{{}, std::move(wl), std::move(wr)};
+}
+
+// ---- Uniform Evaluator for AST Expressions, Member Pointers, and Callables / GF_FN ----
+namespace detail {
+
+template <typename Fn, typename Elem>
+constexpr decltype(auto) eval_fn(const Fn& fn, const Elem& elem) {
+    if constexpr (IsExpr<Fn>) {
+        return fn.eval(elem);
+    } else {
+        return std::invoke(fn, elem);
+    }
+}
+
+} // namespace detail
+
+// ============================================================================
+// Pagination Result (`Page<T>`) & Grouping Result (`Group<K, V>`)
+// ============================================================================
+
+/**
+ * @struct Page
+ * @brief REST-ready paginated query slice with automatic `nlohmann::json` serialization.
+ */
+template <typename T>
+struct Page {
+    std::vector<T> items;
+    std::size_t total{0};
+    std::size_t page{1};
+    std::size_t page_size{20};
+    std::size_t total_pages{0};
+    bool has_next{false};
+    bool has_prev{false};
+};
+
+/**
+ * @struct Group
+ * @brief Grouped bucket returned by `QuerySeq<T>::group_by(key)`.
+ */
+template <typename K, typename V>
+struct Group {
+    K key;
+    std::vector<V> items;
+
+    [[nodiscard]] std::size_t count() const noexcept { return items.size(); }
+
+    template <typename Selector>
+    [[nodiscard]] auto sum(Selector&& sel) const {
+        using ValT = std::remove_cvref_t<decltype(detail::eval_fn(sel, items.front()))>;
+        ValT total{};
+        for (const auto& item : items) {
+            total += detail::eval_fn(sel, item);
+        }
+        return total;
+    }
+
+    template <typename Selector>
+    [[nodiscard]] std::optional<double> avg(Selector&& sel) const {
+        if (items.empty()) return std::nullopt;
+        double total = 0.0;
+        for (const auto& item : items) {
+            total += static_cast<double>(detail::eval_fn(sel, item));
+        }
+        return total / static_cast<double>(items.size());
+    }
+};
+
+// ============================================================================
+// Fluent Query Sequence (`QuerySeq<T>` & `OrderedQuerySeq<T, Cmp>`)
+// ============================================================================
+
+template <typename T, typename Cmp>
+class OrderedQuerySeq;
+
+/**
+ * @class QuerySeq
+ * @brief Fluent C# / EF-style in-memory query builder accepting compile-time AST expressions
+ *        (`col(&User::age) >= 18`, `it > 10`), member pointers (`&User::name`), or callables (`GF_FN`).
+ */
+template <typename T>
+class QuerySeq {
+protected:
+    std::vector<T> data_;
+
+public:
+    using value_type = T;
+
+    QuerySeq() = default;
+    explicit QuerySeq(std::vector<T> data) : data_(std::move(data)) {}
+
+    // ---- Iterators (allows range-based for loops directly on QuerySeq) ----
+    [[nodiscard]] auto begin() noexcept { return data_.begin(); }
+    [[nodiscard]] auto end() noexcept { return data_.end(); }
+    [[nodiscard]] auto begin() const noexcept { return data_.begin(); }
+    [[nodiscard]] auto end() const noexcept { return data_.end(); }
+
+    // ---- Filtering ----
+    template <typename Pred>
+    [[nodiscard]] QuerySeq<T> where(Pred&& pred) const {
+        std::vector<T> out;
+        out.reserve(data_.size());
+        for (const auto& item : data_) {
+            if (static_cast<bool>(detail::eval_fn(pred, item))) {
+                out.push_back(item);
+            }
+        }
+        return QuerySeq<T>(std::move(out));
+    }
+
+    // ---- Projection ----
+    template <typename Selector>
+    [[nodiscard]] auto select(Selector&& sel) const {
+        using OutT = std::remove_cvref_t<decltype(detail::eval_fn(sel, std::declval<const T&>()))>;
+        std::vector<OutT> out;
+        out.reserve(data_.size());
+        for (const auto& item : data_) {
+            out.push_back(detail::eval_fn(sel, item));
+        }
+        return QuerySeq<OutT>(std::move(out));
+    }
+
+    template <typename Selector>
+    [[nodiscard]] auto select_many(Selector&& sel) const {
+        using RangeT = std::remove_cvref_t<decltype(detail::eval_fn(sel, std::declval<const T&>()))>;
+        using ElemT = std::ranges::range_value_t<RangeT>;
+        std::vector<ElemT> out;
+        for (const auto& item : data_) {
+            const auto& sub = detail::eval_fn(sel, item);
+            for (const auto& sub_elem : sub) {
+                out.push_back(sub_elem);
+            }
+        }
+        return QuerySeq<ElemT>(std::move(out));
+    }
+
+    // ---- Ordering (supports chained .then_by() / .then_by_desc()) ----
+    template <typename KeySelector>
+    [[nodiscard]] auto order_by(KeySelector&& key) const;
+
+    template <typename KeySelector>
+    [[nodiscard]] auto order_by_desc(KeySelector&& key) const;
+
+    // ---- Slicing & Reordering ----
+    [[nodiscard]] QuerySeq<T> skip(std::size_t n) const {
+        if (n >= data_.size()) return QuerySeq<T>{};
+        return QuerySeq<T>(std::vector<T>(data_.begin() + static_cast<std::ptrdiff_t>(n), data_.end()));
+    }
+
+    [[nodiscard]] QuerySeq<T> take(std::size_t n) const {
+        std::size_t count = std::min(n, data_.size());
+        return QuerySeq<T>(std::vector<T>(data_.begin(), data_.begin() + static_cast<std::ptrdiff_t>(count)));
+    }
+
+    [[nodiscard]] QuerySeq<T> slice(std::size_t offset, std::size_t count) const {
+        return skip(offset).take(count);
+    }
+
+    [[nodiscard]] QuerySeq<T> reverse() const {
+        std::vector<T> out = data_;
+        std::reverse(out.begin(), out.end());
+        return QuerySeq<T>(std::move(out));
+    }
+
+    // ---- Deduplication ----
+    [[nodiscard]] QuerySeq<T> distinct() const {
+        std::vector<T> out;
+        out.reserve(data_.size());
+        for (const auto& item : data_) {
+            if (std::find(out.begin(), out.end(), item) == out.end()) {
+                out.push_back(item);
+            }
+        }
+        return QuerySeq<T>(std::move(out));
+    }
+
+    template <typename KeySelector>
+    [[nodiscard]] QuerySeq<T> distinct_by(KeySelector&& key) const {
+        using KeyT = std::remove_cvref_t<decltype(detail::eval_fn(key, std::declval<const T&>()))>;
+        std::vector<T> out;
+        out.reserve(data_.size());
+        std::vector<KeyT> seen;
+        seen.reserve(data_.size());
+        for (const auto& item : data_) {
+            KeyT k = detail::eval_fn(key, item);
+            if (std::find(seen.begin(), seen.end(), k) == seen.end()) {
+                seen.push_back(std::move(k));
+                out.push_back(item);
+            }
+        }
+        return QuerySeq<T>(std::move(out));
+    }
+
+    // ---- Grouping (preserves insertion order of groups) ----
+    template <typename KeySelector>
+    [[nodiscard]] auto group_by(KeySelector&& key) const {
+        using KeyT = std::remove_cvref_t<decltype(detail::eval_fn(key, std::declval<const T&>()))>;
+        std::vector<Group<KeyT, T>> groups;
+        for (const auto& item : data_) {
+            KeyT k = detail::eval_fn(key, item);
+            auto it_g = std::find_if(groups.begin(), groups.end(), [&](const auto& g) { return g.key == k; });
+            if (it_g == groups.end()) {
+                groups.push_back(Group<KeyT, T>{std::move(k), {item}});
+            } else {
+                it_g->items.push_back(item);
+            }
+        }
+        return QuerySeq<Group<KeyT, T>>(std::move(groups));
+    }
+
+    // ---- Inner Join ----
+    template <std::ranges::input_range InnerRange, typename OuterKey, typename InnerKey, typename Combiner>
+    [[nodiscard]] auto join(const InnerRange& inner,
+                            OuterKey&& outer_key,
+                            InnerKey&& inner_key,
+                            Combiner&& combiner) const {
+        using InnerT = std::ranges::range_value_t<InnerRange>;
+        using OutT = std::remove_cvref_t<std::invoke_result_t<Combiner, const T&, const InnerT&>>;
+        std::vector<OutT> out;
+        for (const auto& o : data_) {
+            auto ok = detail::eval_fn(outer_key, o);
+            for (const auto& in : inner) {
+                if (ok == detail::eval_fn(inner_key, in)) {
+                    out.push_back(std::invoke(combiner, o, in));
+                }
+            }
+        }
+        return QuerySeq<OutT>(std::move(out));
+    }
+
+    // ---- Concatenation ----
+    template <std::ranges::input_range OtherRange>
+    [[nodiscard]] QuerySeq<T> concat(const OtherRange& other) const {
+        std::vector<T> out = data_;
+        for (const auto& item : other) {
+            out.push_back(item);
+        }
+        return QuerySeq<T>(std::move(out));
+    }
+
+    // ---- Terminal / Materialization Operations ----
+    [[nodiscard]] std::vector<T> to_vec() const & { return data_; }
+    [[nodiscard]] std::vector<T> to_vec() && noexcept { return std::move(data_); }
+
+    template <typename KeySelector>
+    [[nodiscard]] auto to_map(KeySelector&& key) const {
+        using KeyT = std::remove_cvref_t<decltype(detail::eval_fn(key, std::declval<const T&>()))>;
+        std::unordered_map<KeyT, T> map;
+        map.reserve(data_.size());
+        for (const auto& item : data_) {
+            map.insert_or_assign(detail::eval_fn(key, item), item);
+        }
+        return map;
+    }
+
+    /// Returns a 1-based paginated slice (`Page<T>`), directly serializable to JSON by `goforge`.
+    [[nodiscard]] Page<T> paginate(std::size_t page, std::size_t page_size) const {
+        if (page == 0) page = 1;
+        if (page_size == 0) page_size = 20;
+
+        Page<T> p;
+        p.total = data_.size();
+        p.page = page;
+        p.page_size = page_size;
+        p.total_pages = (p.total == 0) ? 0 : ((p.total + page_size - 1) / page_size);
+        p.has_prev = page > 1 && p.total > 0;
+        p.has_next = page < p.total_pages;
+
+        const std::size_t offset = (page - 1) * page_size;
+        if (offset < data_.size()) {
+            const std::size_t cnt = std::min(page_size, data_.size() - offset);
+            p.items.assign(
+                data_.begin() + static_cast<std::ptrdiff_t>(offset),
+                data_.begin() + static_cast<std::ptrdiff_t>(offset + cnt)
+            );
+        }
+        return p;
+    }
+
+    [[nodiscard]] std::optional<T> first() const {
+        if (data_.empty()) return std::nullopt;
+        return data_.front();
+    }
+
+    template <typename Pred>
+    [[nodiscard]] std::optional<T> first(Pred&& pred) const {
+        for (const auto& item : data_) {
+            if (static_cast<bool>(detail::eval_fn(pred, item))) {
+                return item;
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] T first_or(T fallback) const {
+        return data_.empty() ? std::move(fallback) : data_.front();
+    }
+
+    [[nodiscard]] std::optional<T> last() const {
+        if (data_.empty()) return std::nullopt;
+        return data_.back();
+    }
+
+    [[nodiscard]] std::optional<T> single() const {
+        if (data_.empty()) return std::nullopt;
+        if (data_.size() > 1) {
+            throw std::runtime_error("QuerySeq::single() found more than one element.");
+        }
+        return data_.front();
+    }
+
+    [[nodiscard]] std::size_t count() const noexcept { return data_.size(); }
+
+    template <typename Pred>
+    [[nodiscard]] std::size_t count(Pred&& pred) const {
+        std::size_t c = 0;
+        for (const auto& item : data_) {
+            if (static_cast<bool>(detail::eval_fn(pred, item))) ++c;
+        }
+        return c;
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return data_.empty(); }
+    [[nodiscard]] bool any() const noexcept { return !data_.empty(); }
+
+    template <typename Pred>
+    [[nodiscard]] bool any(Pred&& pred) const {
+        for (const auto& item : data_) {
+            if (static_cast<bool>(detail::eval_fn(pred, item))) return true;
+        }
+        return false;
+    }
+
+    template <typename Pred>
+    [[nodiscard]] bool all(Pred&& pred) const {
+        for (const auto& item : data_) {
+            if (!static_cast<bool>(detail::eval_fn(pred, item))) return false;
+        }
+        return true;
+    }
+
+    template <typename Pred>
+    [[nodiscard]] bool none(Pred&& pred) const {
+        return !any(std::forward<Pred>(pred));
+    }
+
+    // ---- Aggregations ----
+    [[nodiscard]] T sum() const requires std::is_arithmetic_v<T> {
+        T total{};
+        for (const auto& item : data_) total += item;
+        return total;
+    }
+
+    template <typename Selector>
+    [[nodiscard]] auto sum(Selector&& sel) const {
+        using ValT = std::remove_cvref_t<decltype(detail::eval_fn(sel, std::declval<const T&>()))>;
+        ValT total{};
+        for (const auto& item : data_) total += detail::eval_fn(sel, item);
+        return total;
+    }
+
+    [[nodiscard]] std::optional<double> avg() const requires std::is_arithmetic_v<T> {
+        if (data_.empty()) return std::nullopt;
+        double total = 0.0;
+        for (const auto& item : data_) total += static_cast<double>(item);
+        return total / static_cast<double>(data_.size());
+    }
+
+    template <typename Selector>
+    [[nodiscard]] std::optional<double> avg(Selector&& sel) const {
+        if (data_.empty()) return std::nullopt;
+        double total = 0.0;
+        for (const auto& item : data_) total += static_cast<double>(detail::eval_fn(sel, item));
+        return total / static_cast<double>(data_.size());
+    }
+
+    [[nodiscard]] std::optional<T> min() const {
+        if (data_.empty()) return std::nullopt;
+        return *std::min_element(data_.begin(), data_.end());
+    }
+
+    [[nodiscard]] std::optional<T> max() const {
+        if (data_.empty()) return std::nullopt;
+        return *std::max_element(data_.begin(), data_.end());
+    }
+
+    template <typename Selector>
+    [[nodiscard]] std::optional<T> min_by(Selector&& sel) const {
+        if (data_.empty()) return std::nullopt;
+        return *std::min_element(data_.begin(), data_.end(), [&](const T& a, const T& b) {
+            return detail::eval_fn(sel, a) < detail::eval_fn(sel, b);
+        });
+    }
+
+    template <typename Selector>
+    [[nodiscard]] std::optional<T> max_by(Selector&& sel) const {
+        if (data_.empty()) return std::nullopt;
+        return *std::max_element(data_.begin(), data_.end(), [&](const T& a, const T& b) {
+            return detail::eval_fn(sel, a) < detail::eval_fn(sel, b);
+        });
+    }
+
+    template <typename Acc, typename Reducer>
+    [[nodiscard]] Acc aggregate(Acc init, Reducer&& fn) const {
+        for (const auto& item : data_) {
+            init = std::invoke(fn, std::move(init), item);
+        }
+        return init;
+    }
+
+    template <typename Action>
+    void for_each(Action&& fn) const {
+        for (const auto& item : data_) {
+            std::invoke(fn, item);
+        }
+    }
+};
+
+/**
+ * @class OrderedQuerySeq
+ * @brief Ordered fluent sequence returned by `order_by` / `order_by_desc` supporting `.then_by()` and `.then_by_desc()`.
+ */
+template <typename T, typename Cmp>
+class OrderedQuerySeq : public QuerySeq<T> {
+    Cmp cmp_;
+
+public:
+    OrderedQuerySeq(std::vector<T> data, Cmp cmp)
+        : QuerySeq<T>(std::move(data)), cmp_(std::move(cmp)) {
+        std::stable_sort(this->data_.begin(), this->data_.end(), cmp_);
+    }
+
+    template <typename KeySelector>
+    [[nodiscard]] auto then_by(KeySelector&& key) const {
+        auto next_cmp = [prev = cmp_, k = std::forward<KeySelector>(key)](const T& a, const T& b) {
+            if (prev(a, b)) return true;
+            if (prev(b, a)) return false;
+            return detail::eval_fn(k, a) < detail::eval_fn(k, b);
+        };
+        return OrderedQuerySeq<T, decltype(next_cmp)>(this->data_, std::move(next_cmp));
+    }
+
+    template <typename KeySelector>
+    [[nodiscard]] auto then_by_desc(KeySelector&& key) const {
+        auto next_cmp = [prev = cmp_, k = std::forward<KeySelector>(key)](const T& a, const T& b) {
+            if (prev(a, b)) return true;
+            if (prev(b, a)) return false;
+            return detail::eval_fn(k, b) < detail::eval_fn(k, a);
+        };
+        return OrderedQuerySeq<T, decltype(next_cmp)>(this->data_, std::move(next_cmp));
+    }
+};
+
+template <typename T>
+template <typename KeySelector>
+auto QuerySeq<T>::order_by(KeySelector&& key) const {
+    auto cmp = [k = std::forward<KeySelector>(key)](const T& a, const T& b) {
+        return detail::eval_fn(k, a) < detail::eval_fn(k, b);
+    };
+    return OrderedQuerySeq<T, decltype(cmp)>(data_, std::move(cmp));
+}
+
+template <typename T>
+template <typename KeySelector>
+auto QuerySeq<T>::order_by_desc(KeySelector&& key) const {
+    auto cmp = [k = std::forward<KeySelector>(key)](const T& a, const T& b) {
+        return detail::eval_fn(k, b) < detail::eval_fn(k, a);
+    };
+    return OrderedQuerySeq<T, decltype(cmp)>(data_, std::move(cmp));
+}
+
+// ============================================================================
+// Entry Points (`from(range)`, `from({...})`, `from_values(map)`)
+// ============================================================================
+
+/// Creates a fluent `QuerySeq<T>` from any C++20 range (`std::vector`, `std::array`, `std::list`, `std::span`, ...).
+template <std::ranges::input_range Range>
+[[nodiscard]] auto from(const Range& range) {
+    using ElemT = std::ranges::range_value_t<Range>;
+    std::vector<ElemT> items;
+    if constexpr (std::ranges::sized_range<Range>) {
+        items.reserve(std::ranges::size(range));
+    }
+    for (const auto& elem : range) {
+        items.push_back(elem);
+    }
+    return QuerySeq<ElemT>(std::move(items));
+}
+
+/// Creates a fluent `QuerySeq<T>` from an initializer list (`from({1, 2, 3, 4})`).
+template <typename T>
+[[nodiscard]] QuerySeq<T> from(std::initializer_list<T> init) {
+    return QuerySeq<T>(std::vector<T>(init));
+}
+
+/// Creates a fluent `QuerySeq<ValueT>` from the values of an associative map (`std::unordered_map`, `std::map`).
+template <typename Map>
+[[nodiscard]] auto from_values(const Map& map) {
+    using ValueT = typename Map::mapped_type;
+    std::vector<ValueT> items;
+    items.reserve(map.size());
+    for (const auto& [k, v] : map) {
+        items.push_back(v);
+    }
+    return QuerySeq<ValueT>(std::move(items));
+}
+
+} // namespace goforge::query
+
+// Automatic JSON serialization for `goforge::query::Page<T>`!
+namespace nlohmann {
+
+template <typename T>
+struct adl_serializer<goforge::query::Page<T>> {
+    static void to_json(json& j, const goforge::query::Page<T>& p) {
+        j = json{
+            {"items", p.items},
+            {"total", p.total},
+            {"page", p.page},
+            {"page_size", p.page_size},
+            {"total_pages", p.total_pages},
+            {"has_next", p.has_next},
+            {"has_prev", p.has_prev}
+        };
+    }
+
+    static void from_json(const json& j, goforge::query::Page<T>& p) {
+        j.at("items").get_to(p.items);
+        j.at("total").get_to(p.total);
+        j.at("page").get_to(p.page);
+        j.at("page_size").get_to(p.page_size);
+        j.at("total_pages").get_to(p.total_pages);
+        j.at("has_next").get_to(p.has_next);
+        j.at("has_prev").get_to(p.has_prev);
+    }
+};
+
+} // namespace nlohmann
+
+/**
+ * @brief Declares a unified `goforge` Model/DTO with:
+ *        1. JSON serialization & default-value deserialization (`GOFORGE_JSON_DTO_DEFAULT`), and
+ *        2. Compile-time `goforge::query::EntityMeta<Type>` reflection (table name + column names)
+ *           so `col(&Type::field)` automatically carries SQL column metadata for future ORM support.
+ */
+#define GOFORGE_MODEL_TABLE(Type, TableNameLiteral, ...)                                         \
+    GOFORGE_JSON_DTO_DEFAULT(Type, __VA_ARGS__)                                                  \
+    namespace goforge::query {                                                                   \
+    template <>                                                                                  \
+    struct EntityMeta<Type> {                                                                    \
+        static constexpr bool registered = true;                                                 \
+        static constexpr std::string_view table_name = TableNameLiteral;                         \
+        static constexpr auto fields() noexcept {                                                \
+            return std::make_tuple(GOFORGE_PP_FOR_EACH(GOFORGE_MODEL_FIELD_PAIR, Type, __VA_ARGS__)); \
+        }                                                                                        \
+    };                                                                                           \
+    }
+
+/// Declares a unified `goforge` Model/DTO using `#Type` as the default table name.
+#define GOFORGE_MODEL(Type, ...) GOFORGE_MODEL_TABLE(Type, #Type, __VA_ARGS__)
+// ---- end goforge/query.hpp ----
 // ---- begin goforge/di.hpp ----
 
 /**
@@ -331,24 +1518,28 @@ struct FunctionTraits<R(Args...)> {
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) const> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...)> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) const noexcept> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
 
 template <typename C, typename R, typename... Args>
 struct FunctionTraits<R (C::*)(Args...) noexcept> {
+    using class_type = C;
     using return_type = R;
     using args_tuple = std::tuple<Args...>;
 };
@@ -729,6 +1920,13 @@ class ServiceCollection {
         return *this;
     }
 
+    template <typename D>
+    using CtorDepParam = std::conditional_t<
+        std::is_reference_v<D> || detail::IsSharedPtr<std::remove_cvref_t<D>>::value,
+        D,
+        D&
+    >;
+
     template <typename ServiceType, typename ImplType, typename... Deps>
     ServiceCollection& register_ctor(Lifetime lifetime) {
         static_assert(
@@ -737,9 +1935,9 @@ class ServiceCollection {
         );
         return register_factory<ServiceType>(
             lifetime,
-            [](Deps... deps) -> std::shared_ptr<ServiceType> {
+            [](CtorDepParam<Deps>... deps) -> std::shared_ptr<ServiceType> {
                 return std::static_pointer_cast<ServiceType>(
-                    std::make_shared<ImplType>(std::forward<Deps>(deps)...)
+                    std::make_shared<ImplType>(std::forward<CtorDepParam<Deps>>(deps)...)
                 );
             }
         );
@@ -824,6 +2022,13 @@ class ServiceCollection {
 
 public:
     ServiceCollection() = default;
+
+    /// Returns true if a descriptor for `T` has already been registered.
+    template <typename T>
+    [[nodiscard]] bool has() const noexcept {
+        using CleanT = std::remove_cv_t<T>;
+        return descriptors_.contains(std::type_index(typeid(CleanT)));
+    }
 
     /// Registers a pre-built instance `std::shared_ptr<T>` as a `Singleton`.
     template <typename T>
@@ -1946,14 +3151,15 @@ inline ParseHeaderResult parse_http_headers(
 
 /**
  * @file context.hpp
- * @brief Gin-style per-request `HttpContext` with path/query parameters, URL decoding,
- *        typed key-value store, `gorun::Context` cancellation, `ServiceScope` DI access,
- *        response builders, and middleware chain control (`next()`, `abort()`).
+ * @brief Gin-style per-request `HttpContext` with path/query parameters, URL
+ * decoding, typed key-value store, `gorun::Context` cancellation,
+ * `ServiceScope` DI access, response builders, and middleware chain control
+ * (`next()`, `abort()`).
  */
 
 #include <any>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -1965,448 +3171,866 @@ inline ParseHeaderResult parse_http_headers(
 #include <utility>
 #include <vector>
 
+
+
+
 #include "gorun/gorun.hpp"
-
-
-
 
 namespace goforge::web {
 
 class HttpContext;
 
 /// Middleware and route handler signature (mirrors `gin.HandlerFunc`).
-using HandlerFunc = std::function<void(HttpContext&)>;
+using HandlerFunc = std::function<void(HttpContext &)>;
 
 namespace detail {
 
 inline int hex_digit_value(char c) noexcept {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return -1;
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F')
+    return 10 + (c - 'A');
+  return -1;
 }
 
-inline std::string url_decode(std::string_view input, bool plus_as_space = true) {
-    std::string out;
-    out.reserve(input.size());
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        char c = input[i];
-        if (plus_as_space && c == '+') {
-            out.push_back(' ');
-        } else if (c == '%' && i + 2 < input.size()) {
-            int hi = hex_digit_value(input[i + 1]);
-            int lo = hex_digit_value(input[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-            } else {
-                out.push_back(c);
-            }
-        } else {
-            out.push_back(c);
-        }
+inline std::string url_decode(std::string_view input,
+                              bool plus_as_space = true) {
+  std::string out;
+  out.reserve(input.size());
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    char c = input[i];
+    if (plus_as_space && c == '+') {
+      out.push_back(' ');
+    } else if (c == '%' && i + 2 < input.size()) {
+      int hi = hex_digit_value(input[i + 1]);
+      int lo = hex_digit_value(input[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out.push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+      } else {
+        out.push_back(c);
+      }
+    } else {
+      out.push_back(c);
     }
-    return out;
+  }
+  return out;
 }
 
-inline std::unordered_map<std::string, std::string> parse_query_string(std::string_view raw) {
-    std::unordered_map<std::string, std::string> result;
-    std::size_t pos = 0;
-    while (pos < raw.size()) {
-        auto amp = raw.find('&', pos);
-        std::string_view pair = (amp == std::string_view::npos)
-            ? raw.substr(pos)
-            : raw.substr(pos, amp - pos);
-        pos = (amp == std::string_view::npos) ? raw.size() : amp + 1;
+inline std::unordered_map<std::string, std::string>
+parse_query_string(std::string_view raw) {
+  std::unordered_map<std::string, std::string> result;
+  std::size_t pos = 0;
+  while (pos < raw.size()) {
+    auto amp = raw.find('&', pos);
+    std::string_view pair = (amp == std::string_view::npos)
+                                ? raw.substr(pos)
+                                : raw.substr(pos, amp - pos);
+    pos = (amp == std::string_view::npos) ? raw.size() : amp + 1;
 
-        if (pair.empty()) continue;
-        auto eq = pair.find('=');
-        if (eq == std::string_view::npos) {
-            result.insert_or_assign(url_decode(pair), std::string{});
-        } else {
-            result.insert_or_assign(
-                url_decode(pair.substr(0, eq)),
-                url_decode(pair.substr(eq + 1))
-            );
-        }
+    if (pair.empty())
+      continue;
+    auto eq = pair.find('=');
+    if (eq == std::string_view::npos) {
+      result.insert_or_assign(url_decode(pair), std::string{});
+    } else {
+      result.insert_or_assign(url_decode(pair.substr(0, eq)),
+                              url_decode(pair.substr(eq + 1)));
     }
-    return result;
+  }
+  return result;
 }
 
 template <typename T>
 std::optional<T> parse_number(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    T value{};
-    const char* first = sv.data();
-    const char* last = first + sv.size();
-    auto [ptr, ec] = std::from_chars(first, last, value);
-    if (ec != std::errc{} || ptr != last) {
-        return std::nullopt;
-    }
-    return value;
+  if (sv.empty())
+    return std::nullopt;
+  T value{};
+  const char *first = sv.data();
+  const char *last = first + sv.size();
+  auto [ptr, ec] = std::from_chars(first, last, value);
+  if (ec != std::errc{} || ptr != last) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 } // namespace detail
 
 /**
- * @brief Sleeps cooperatively inside a green routine until `duration` elapses or `ctx` is canceled.
- * @return `true` if the full duration elapsed, `false` if canceled by `ctx` (e.g., Timeout middleware).
+ * @brief Sleeps cooperatively inside a green routine until `duration` elapses
+ * or `ctx` is canceled.
+ * @return `true` if the full duration elapsed, `false` if canceled by `ctx`
+ * (e.g., Timeout middleware).
  */
-inline bool sleep_with_context(gorun::Context ctx, std::chrono::milliseconds duration) {
-    if (ctx.is_canceled()) return false;
-    bool completed = false;
-    gorun::select(
-        gorun::on_timeout(duration, [&]() { completed = true; }),
-        ctx.on_done([&]() { completed = false; })
-    );
-    return completed;
+inline bool sleep_with_context(gorun::Context ctx,
+                               std::chrono::milliseconds duration) {
+  if (ctx.is_canceled())
+    return false;
+  bool completed = false;
+  gorun::select(gorun::on_timeout(duration, [&]() { completed = true; }),
+                ctx.on_done([&]() { completed = false; }));
+  return completed;
 }
 
 /**
  * @class HttpContext
- * @brief Per-request execution context passed through the middleware chain and route handler.
+ * @brief Per-request execution context passed through the middleware chain and
+ * route handler.
  */
 class HttpContext {
-    const http::HttpRequest* req_;
-    http::HttpResponse resp_;
-    gorun::Context go_ctx_;
-    ServiceScope* scope_{nullptr};
+  const http::HttpRequest *req_;
+  http::HttpResponse resp_;
+  gorun::Context go_ctx_;
+  ServiceScope *scope_{nullptr};
 
-    std::unordered_map<std::string, std::string> params_;
-    mutable bool query_parsed_{false};
-    mutable std::unordered_map<std::string, std::string> query_params_;
-    std::unordered_map<std::string, std::any> values_;
+  std::unordered_map<std::string, std::string> params_;
+  mutable bool query_parsed_{false};
+  mutable std::unordered_map<std::string, std::string> query_params_;
+  std::unordered_map<std::string, std::any> values_;
 
-    const std::vector<HandlerFunc>* global_handlers_{nullptr};
-    const std::vector<HandlerFunc>* route_handlers_{nullptr};
-    std::vector<HandlerFunc> owned_route_handlers_;
-    std::size_t handler_index_{0};
-    bool aborted_{false};
-    bool written_{false};
+  const std::vector<HandlerFunc> *global_handlers_{nullptr};
+  const std::vector<HandlerFunc> *route_handlers_{nullptr};
+  std::vector<HandlerFunc> owned_route_handlers_;
+  std::size_t handler_index_{0};
+  bool aborted_{false};
+  bool written_{false};
 
-    void ensure_query_parsed() const {
-        if (!query_parsed_) {
-            query_params_ = detail::parse_query_string(req_->raw_query);
-            query_parsed_ = true;
-        }
+  void ensure_query_parsed() const {
+    if (!query_parsed_) {
+      query_params_ = detail::parse_query_string(req_->raw_query);
+      query_parsed_ = true;
     }
+  }
 
 public:
-    HttpContext(const http::HttpRequest& req,
-                gorun::Context go_ctx,
-                ServiceScope* scope = nullptr)
-        : req_(&req)
-        , go_ctx_(std::move(go_ctx))
-        , scope_(scope) {}
+  HttpContext(const http::HttpRequest &req, gorun::Context go_ctx,
+              ServiceScope *scope = nullptr)
+      : req_(&req), go_ctx_(std::move(go_ctx)), scope_(scope) {}
 
-    HttpContext(const HttpContext&) = delete;
-    HttpContext& operator=(const HttpContext&) = delete;
+  HttpContext(const HttpContext &) = delete;
+  HttpContext &operator=(const HttpContext &) = delete;
 
-    // ---- Request inspection ----
-    [[nodiscard]] const http::HttpRequest& request() const noexcept { return *req_; }
-    [[nodiscard]] const std::string& method() const noexcept { return req_->method; }
-    [[nodiscard]] const std::string& path() const noexcept { return req_->path; }
-    [[nodiscard]] const std::string& raw_query() const noexcept { return req_->raw_query; }
-    [[nodiscard]] const std::string& body() const noexcept { return req_->body; }
-    [[nodiscard]] const std::string& remote_addr() const noexcept { return req_->remote_addr; }
+  // ---- Request inspection ----
+  [[nodiscard]] const http::HttpRequest &request() const noexcept {
+    return *req_;
+  }
+  [[nodiscard]] const std::string &method() const noexcept {
+    return req_->method;
+  }
+  [[nodiscard]] const std::string &path() const noexcept { return req_->path; }
+  [[nodiscard]] const std::string &raw_query() const noexcept {
+    return req_->raw_query;
+  }
+  [[nodiscard]] const std::string &body() const noexcept { return req_->body; }
+  [[nodiscard]] const std::string &remote_addr() const noexcept {
+    return req_->remote_addr;
+  }
 
-    [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const {
-        return req_->headers.get(name);
+  [[nodiscard]] std::optional<std::string_view>
+  header(std::string_view name) const {
+    return req_->headers.get(name);
+  }
+
+  [[nodiscard]] std::string header_or(std::string_view name,
+                                      std::string_view fallback = "") const {
+    return req_->headers.get_or(name, fallback);
+  }
+
+  // ---- Path parameters (:id, *filepath) ----
+  void set_params(std::unordered_map<std::string, std::string> params) {
+    params_ = std::move(params);
+  }
+
+  [[nodiscard]] std::optional<std::string_view>
+  param(std::string_view key) const {
+    auto it = params_.find(std::string(key));
+    if (it == params_.end())
+      return std::nullopt;
+    return std::string_view(it->second);
+  }
+
+  [[nodiscard]] std::string param_or(std::string_view key,
+                                     std::string_view fallback = "") const {
+    auto v = param(key);
+    return v ? std::string(*v) : std::string(fallback);
+  }
+
+  template <typename T>
+    requires std::is_arithmetic_v<T>
+  [[nodiscard]] std::optional<T> param_as(std::string_view key) const noexcept {
+    auto v = param(key);
+    if (!v)
+      return std::nullopt;
+    return detail::parse_number<T>(*v);
+  }
+
+  // ---- Query parameters (?key=val&...) ----
+  [[nodiscard]] std::optional<std::string_view>
+  query(std::string_view key) const {
+    ensure_query_parsed();
+    auto it = query_params_.find(std::string(key));
+    if (it == query_params_.end())
+      return std::nullopt;
+    return std::string_view(it->second);
+  }
+
+  [[nodiscard]] std::string query_or(std::string_view key,
+                                     std::string_view fallback = "") const {
+    auto v = query(key);
+    return v ? std::string(*v) : std::string(fallback);
+  }
+
+  template <typename T>
+    requires std::is_arithmetic_v<T>
+  [[nodiscard]] std::optional<T> query_as(std::string_view key) const noexcept {
+    auto v = query(key);
+    if (!v)
+      return std::nullopt;
+    return detail::parse_number<T>(*v);
+  }
+
+  // ---- Per-request typed key-value bag (Gin-style Set/Get) ----
+  template <typename T> void set(std::string key, T &&value) {
+    values_.insert_or_assign(std::move(key), std::forward<T>(value));
+  }
+
+  template <typename T>
+  [[nodiscard]] std::optional<T> get(const std::string &key) const {
+    auto it = values_.find(key);
+    if (it == values_.end())
+      return std::nullopt;
+    if (const T *ptr = std::any_cast<T>(&it->second)) {
+      return *ptr;
     }
+    return std::nullopt;
+  }
 
-    [[nodiscard]] std::string header_or(std::string_view name, std::string_view fallback = "") const {
-        return req_->headers.get_or(name, fallback);
+  [[nodiscard]] bool has_value(const std::string &key) const {
+    return values_.contains(key);
+  }
+
+  // ---- gorun::Context cancellation & timeouts ----
+  [[nodiscard]] gorun::Context go_ctx() const noexcept { return go_ctx_; }
+
+  void set_go_ctx(gorun::Context ctx) noexcept { go_ctx_ = std::move(ctx); }
+
+  [[nodiscard]] bool is_canceled() const noexcept {
+    return go_ctx_.is_canceled();
+  }
+
+  // ---- DI ServiceScope integration ----
+  [[nodiscard]] bool has_scope() const noexcept { return scope_ != nullptr; }
+
+  [[nodiscard]] ServiceScope &scope() {
+    if (!scope_) {
+      throw ScopeRequiredError(
+          "HttpContext has no active DI ServiceScope attached.");
     }
+    return *scope_;
+  }
 
-    // ---- Path parameters (:id, *filepath) ----
-    void set_params(std::unordered_map<std::string, std::string> params) {
-        params_ = std::move(params);
+  template <typename T> [[nodiscard]] T &resolve() {
+    return scope().resolve<T>();
+  }
+
+  template <typename T>
+  [[nodiscard]] std::shared_ptr<std::remove_cv_t<T>> resolve_ptr() {
+    return scope().resolve_ptr<T>();
+  }
+
+  template <typename Fn> decltype(auto) invoke(Fn &&fn) {
+    return scope().invoke(std::forward<Fn>(fn));
+  }
+
+  // ---- Typed JSON Request Binding & Validation (Gin ShouldBindJSON style)
+  // ----
+
+  /// Parses the raw HTTP body into a generic `goforge::Json` value without
+  /// writing an error response.
+  [[nodiscard]] BindResult<Json> try_bind_json_value() const {
+    return parse_json_body(req_->body);
+  }
+
+  /// Parses the raw HTTP body into a `goforge::Json` value; automatically
+  /// aborts with `400` on parse error.
+  [[nodiscard]] std::optional<Json> bind_json_value() {
+    auto res = try_bind_json_value();
+    if (!res.ok()) {
+      abort_with_error(res.http_status, res.error_code, res.message);
+      return std::nullopt;
     }
+    return std::move(res.value);
+  }
 
-    [[nodiscard]] std::optional<std::string_view> param(std::string_view key) const {
-        auto it = params_.find(std::string(key));
-        if (it == params_.end()) return std::nullopt;
-        return std::string_view(it->second);
+  /**
+   * @brief Parses and validates the JSON body into DTO `T` without writing an
+   * error response. Checks JSON syntax/schema (`400`) and calls
+   * `dto.validate()` (`422`) if defined.
+   */
+  template <typename T> [[nodiscard]] BindResult<T> try_bind_json() const {
+    return parse_and_validate_json<T>(req_->body);
+  }
+
+  /**
+   * @brief Parses and validates the JSON body into DTO `T` (mirrors Gin's
+   * `ShouldBindJSON`). On failure, automatically writes a structured JSON error
+   * (`400` or `422`), aborts the middleware chain, and returns `std::nullopt`.
+   */
+  template <typename T> [[nodiscard]] std::optional<T> bind_json() {
+    auto res = try_bind_json<T>();
+    if (!res.ok()) {
+      abort_with_error(res.http_status, res.error_code, res.message);
+      return std::nullopt;
     }
+    return std::move(res.value);
+  }
 
-    [[nodiscard]] std::string param_or(std::string_view key, std::string_view fallback = "") const {
-        auto v = param(key);
-        return v ? std::string(*v) : std::string(fallback);
+  // ---- Response builders ----
+  HttpContext &status(int code) {
+    resp_.status = code;
+    written_ = true;
+    return *this;
+  }
+
+  HttpContext &set_header(std::string_view name, std::string value) {
+    resp_.headers.set(name, std::move(value));
+    return *this;
+  }
+
+  void data(int code, std::string_view content_type, std::string body) {
+    resp_.status = code;
+    resp_.body = std::move(body);
+    resp_.headers.set("Content-Type", std::string(content_type));
+    written_ = true;
+  }
+
+  void text(int code, std::string body) {
+    data(code, "text/plain; charset=utf-8", std::move(body));
+  }
+
+  /// Writes a pre-serialized raw JSON string response.
+  void json_raw(int code, std::string raw_json_body) {
+    resp_.status = code;
+    resp_.body = std::move(raw_json_body);
+    resp_.headers.set("Content-Type", "application/json; charset=utf-8");
+    written_ = true;
+  }
+
+  /// Writes a pre-serialized JSON string (backwards-compatible overload).
+  void json(int code, std::string raw_json_body) {
+    json_raw(code, std::move(raw_json_body));
+  }
+
+  /// Exact-match overload for raw JSON string literals (prevents ambiguity with
+  /// `nlohmann::json(const char*)`).
+  void json(int code, const char *raw_json_body) {
+    json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+  }
+
+  /// Serializes a `goforge::Json` / `goforge::H` value to JSON and sets
+  /// `Content-Type: application/json`.
+  void json(int code, const Json &value) { json_raw(code, value.dump()); }
+
+  /// Serializes any DTO (`GOFORGE_JSON_DTO`), `std::vector<Dto>`, `std::map`,
+  /// etc. directly to JSON!
+  template <typename T>
+    requires(!std::convertible_to<T, std::string_view> &&
+             !std::same_as<std::decay_t<T>, Json>)
+  void json(int code, const T &dto) {
+    json_raw(code, Json(dto).dump());
+  }
+
+  /// Writes a standardized structured JSON error: `{"error": error_code,
+  /// "message": message}`.
+  void error(int code, std::string_view error_code,
+             std::string_view message = "") {
+    json(code, make_error_json(error_code, message));
+  }
+
+  void no_content() {
+    resp_.status = 204;
+    resp_.body.clear();
+    written_ = true;
+  }
+
+  [[nodiscard]] bool is_written() const noexcept { return written_; }
+  [[nodiscard]] http::HttpResponse &response() noexcept { return resp_; }
+  [[nodiscard]] const http::HttpResponse &response() const noexcept {
+    return resp_;
+  }
+
+  // ---- Middleware chain execution (zero-copy view over global + route handler
+  // chains!) ----
+  void set_handler_views(const std::vector<HandlerFunc> *global_mws,
+                         const std::vector<HandlerFunc> *route_mws) noexcept {
+    global_handlers_ = global_mws;
+    route_handlers_ = route_mws;
+    owned_route_handlers_.clear();
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void set_handler_with_fallback(const std::vector<HandlerFunc> *global_mws,
+                                 HandlerFunc fallback_endpoint) {
+    global_handlers_ = global_mws;
+    owned_route_handlers_.clear();
+    owned_route_handlers_.push_back(std::move(fallback_endpoint));
+    route_handlers_ = &owned_route_handlers_;
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void set_handlers(std::vector<HandlerFunc> chain) {
+    global_handlers_ = nullptr;
+    owned_route_handlers_ = std::move(chain);
+    route_handlers_ = &owned_route_handlers_;
+    handler_index_ = 0;
+    aborted_ = false;
+  }
+
+  void next() {
+    const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+    const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+    const std::size_t total = g_sz + r_sz;
+    while (handler_index_ < total && !aborted_) {
+      const std::size_t idx = handler_index_++;
+      const HandlerFunc &fn = (idx < g_sz) ? (*global_handlers_)[idx]
+                                           : (*route_handlers_)[idx - g_sz];
+      if (fn) {
+        fn(*this);
+      }
     }
-
-    template <typename T>
-        requires std::is_arithmetic_v<T>
-    [[nodiscard]] std::optional<T> param_as(std::string_view key) const noexcept {
-        auto v = param(key);
-        if (!v) return std::nullopt;
-        return detail::parse_number<T>(*v);
-    }
-
-    // ---- Query parameters (?key=val&...) ----
-    [[nodiscard]] std::optional<std::string_view> query(std::string_view key) const {
-        ensure_query_parsed();
-        auto it = query_params_.find(std::string(key));
-        if (it == query_params_.end()) return std::nullopt;
-        return std::string_view(it->second);
-    }
-
-    [[nodiscard]] std::string query_or(std::string_view key, std::string_view fallback = "") const {
-        auto v = query(key);
-        return v ? std::string(*v) : std::string(fallback);
-    }
-
-    template <typename T>
-        requires std::is_arithmetic_v<T>
-    [[nodiscard]] std::optional<T> query_as(std::string_view key) const noexcept {
-        auto v = query(key);
-        if (!v) return std::nullopt;
-        return detail::parse_number<T>(*v);
-    }
-
-    // ---- Per-request typed key-value bag (Gin-style Set/Get) ----
-    template <typename T>
-    void set(std::string key, T&& value) {
-        values_.insert_or_assign(std::move(key), std::forward<T>(value));
-    }
-
-    template <typename T>
-    [[nodiscard]] std::optional<T> get(const std::string& key) const {
-        auto it = values_.find(key);
-        if (it == values_.end()) return std::nullopt;
-        if (const T* ptr = std::any_cast<T>(&it->second)) {
-            return *ptr;
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] bool has_value(const std::string& key) const {
-        return values_.contains(key);
-    }
-
-    // ---- gorun::Context cancellation & timeouts ----
-    [[nodiscard]] gorun::Context go_ctx() const noexcept { return go_ctx_; }
-
-    void set_go_ctx(gorun::Context ctx) noexcept { go_ctx_ = std::move(ctx); }
-
-    [[nodiscard]] bool is_canceled() const noexcept { return go_ctx_.is_canceled(); }
-
-    // ---- DI ServiceScope integration ----
-    [[nodiscard]] bool has_scope() const noexcept { return scope_ != nullptr; }
-
-    [[nodiscard]] ServiceScope& scope() {
-        if (!scope_) {
-            throw ScopeRequiredError("HttpContext has no active DI ServiceScope attached.");
-        }
-        return *scope_;
-    }
-
-    template <typename T>
-    [[nodiscard]] T& resolve() {
-        return scope().resolve<T>();
-    }
-
-    template <typename T>
-    [[nodiscard]] std::shared_ptr<std::remove_cv_t<T>> resolve_ptr() {
-        return scope().resolve_ptr<T>();
-    }
-
-    template <typename Fn>
-    decltype(auto) invoke(Fn&& fn) {
-        return scope().invoke(std::forward<Fn>(fn));
-    }
-
-    // ---- Typed JSON Request Binding & Validation (Gin ShouldBindJSON style) ----
-
-    /// Parses the raw HTTP body into a generic `goforge::Json` value without writing an error response.
-    [[nodiscard]] BindResult<Json> try_bind_json_value() const {
-        return parse_json_body(req_->body);
-    }
-
-    /// Parses the raw HTTP body into a `goforge::Json` value; automatically aborts with `400` on parse error.
-    [[nodiscard]] std::optional<Json> bind_json_value() {
-        auto res = try_bind_json_value();
-        if (!res.ok()) {
-            abort_with_error(res.http_status, res.error_code, res.message);
-            return std::nullopt;
-        }
-        return std::move(res.value);
-    }
-
-    /**
-     * @brief Parses and validates the JSON body into DTO `T` without writing an error response.
-     *        Checks JSON syntax/schema (`400`) and calls `dto.validate()` (`422`) if defined.
-     */
-    template <typename T>
-    [[nodiscard]] BindResult<T> try_bind_json() const {
-        return parse_and_validate_json<T>(req_->body);
-    }
-
-    /**
-     * @brief Parses and validates the JSON body into DTO `T` (mirrors Gin's `ShouldBindJSON`).
-     *        On failure, automatically writes a structured JSON error (`400` or `422`), aborts the
-     *        middleware chain, and returns `std::nullopt`.
-     */
-    template <typename T>
-    [[nodiscard]] std::optional<T> bind_json() {
-        auto res = try_bind_json<T>();
-        if (!res.ok()) {
-            abort_with_error(res.http_status, res.error_code, res.message);
-            return std::nullopt;
-        }
-        return std::move(res.value);
-    }
-
-    // ---- Response builders ----
-    HttpContext& status(int code) {
-        resp_.status = code;
-        written_ = true;
-        return *this;
-    }
-
-    HttpContext& set_header(std::string_view name, std::string value) {
-        resp_.headers.set(name, std::move(value));
-        return *this;
-    }
-
-    void text(int code, std::string body) {
-        resp_.status = code;
-        resp_.body = std::move(body);
-        resp_.headers.set("Content-Type", "text/plain; charset=utf-8");
-        written_ = true;
-    }
-
-    /// Writes a pre-serialized raw JSON string response.
-    void json_raw(int code, std::string raw_json_body) {
-        resp_.status = code;
-        resp_.body = std::move(raw_json_body);
-        resp_.headers.set("Content-Type", "application/json; charset=utf-8");
-        written_ = true;
-    }
-
-    /// Writes a pre-serialized JSON string (backwards-compatible overload).
-    void json(int code, std::string raw_json_body) {
-        json_raw(code, std::move(raw_json_body));
-    }
-
-    /// Exact-match overload for raw JSON string literals (prevents ambiguity with `nlohmann::json(const char*)`).
-    void json(int code, const char* raw_json_body) {
-        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
-    }
-
-    /// Serializes a `goforge::Json` / `goforge::H` value to JSON and sets `Content-Type: application/json`.
-    void json(int code, const Json& value) {
-        json_raw(code, value.dump());
-    }
-
-    /// Serializes any DTO (`GOFORGE_JSON_DTO`), `std::vector<Dto>`, `std::map`, etc. directly to JSON!
-    template <typename T>
-        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
-    void json(int code, const T& dto) {
-        json_raw(code, Json(dto).dump());
-    }
-
-    /// Writes a standardized structured JSON error: `{"error": error_code, "message": message}`.
-    void error(int code, std::string_view error_code, std::string_view message = "") {
-        json(code, make_error_json(error_code, message));
-    }
-
-    void no_content() {
-        resp_.status = 204;
-        resp_.body.clear();
-        written_ = true;
-    }
-
-    [[nodiscard]] bool is_written() const noexcept { return written_; }
-    [[nodiscard]] http::HttpResponse& response() noexcept { return resp_; }
-    [[nodiscard]] const http::HttpResponse& response() const noexcept { return resp_; }
-
-    // ---- Middleware chain execution (zero-copy view over global + route handler chains!) ----
-    void set_handler_views(const std::vector<HandlerFunc>* global_mws,
-                           const std::vector<HandlerFunc>* route_mws) noexcept {
-        global_handlers_ = global_mws;
-        route_handlers_ = route_mws;
-        owned_route_handlers_.clear();
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void set_handler_with_fallback(const std::vector<HandlerFunc>* global_mws,
-                                   HandlerFunc fallback_endpoint) {
-        global_handlers_ = global_mws;
-        owned_route_handlers_.clear();
-        owned_route_handlers_.push_back(std::move(fallback_endpoint));
-        route_handlers_ = &owned_route_handlers_;
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void set_handlers(std::vector<HandlerFunc> chain) {
-        global_handlers_ = nullptr;
-        owned_route_handlers_ = std::move(chain);
-        route_handlers_ = &owned_route_handlers_;
-        handler_index_ = 0;
-        aborted_ = false;
-    }
-
-    void next() {
-        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
-        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
-        const std::size_t total = g_sz + r_sz;
-        while (handler_index_ < total && !aborted_) {
-            const std::size_t idx = handler_index_++;
-            const HandlerFunc& fn = (idx < g_sz)
-                ? (*global_handlers_)[idx]
-                : (*route_handlers_)[idx - g_sz];
-            if (fn) {
-                fn(*this);
-            }
-        }
-    }
+}
 
     void abort() noexcept {
-        aborted_ = true;
-        const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
-        const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
-        handler_index_ = g_sz + r_sz;
-    }
+  aborted_ = true;
+  const std::size_t g_sz = global_handlers_ ? global_handlers_->size() : 0;
+  const std::size_t r_sz = route_handlers_ ? route_handlers_->size() : 0;
+  handler_index_ = g_sz + r_sz;
+}
 
-    void abort_with_text(int code, std::string msg) {
-        text(code, std::move(msg));
-        abort();
-    }
+void abort_with_text(int code, std::string msg) {
+  text(code, std::move(msg));
+  abort();
+}
 
-    void abort_with_json(int code, std::string raw_json_body) {
-        json_raw(code, std::move(raw_json_body));
-        abort();
-    }
+void abort_with_json(int code, std::string raw_json_body) {
+  json_raw(code, std::move(raw_json_body));
+  abort();
+}
 
-    void abort_with_json(int code, const char* raw_json_body) {
-        json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
-        abort();
-    }
+void abort_with_json(int code, const char *raw_json_body) {
+  json_raw(code, std::string(raw_json_body ? raw_json_body : ""));
+  abort();
+}
 
-    void abort_with_json(int code, const Json& value) {
-        json(code, value);
-        abort();
-    }
+void abort_with_json(int code, const Json &value) {
+  json(code, value);
+  abort();
+}
 
-    template <typename T>
-        requires (!std::convertible_to<T, std::string_view> && !std::same_as<std::decay_t<T>, Json>)
-    void abort_with_json(int code, const T& dto) {
-        json(code, dto);
-        abort();
-    }
+template <typename T>
+  requires(!std::convertible_to<T, std::string_view> &&
+           !std::same_as<std::decay_t<T>, Json>)
+void abort_with_json(int code, const T &dto) {
+  json(code, dto);
+  abort();
+}
 
-    void abort_with_error(int code, std::string_view error_code, std::string_view message = "") {
-        error(code, error_code, message);
-        abort();
-    }
+void abort_with_error(int code, std::string_view error_code,
+                      std::string_view message = "") {
+  error(code, error_code, message);
+  abort();
+}
 
-    [[nodiscard]] bool is_aborted() const noexcept { return aborted_; }
+[[nodiscard]] bool is_aborted() const noexcept { return aborted_; }
 };
 
 } // namespace goforge::web
 // ---- end goforge/web/context.hpp ----
+// ---- begin goforge/web/extractors.hpp ----
+
+/**
+ * @file extractors.hpp
+ * @brief Ergonomic typed HTTP extractors (`Body<T>`, `Path<"id", int>`, `Query<"page", int>`,
+ *        `Header<"Authorization">`) and smart return types (`ApiResponse`, `Result<T>`, `ok()`,
+ *        `created()`, `not_found()`, `err()`) for zero-boilerplate route handlers & controllers.
+ */
+
+#include <algorithm>
+#include <concepts>
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+
+
+
+namespace goforge::web {
+
+/**
+ * @struct FixedString
+ * @brief C++20 structural string wrapper enabling compile-time named extractors like `Path<"id", int>`.
+ */
+template <std::size_t N>
+struct FixedString {
+    char data[N]{};
+
+    constexpr FixedString(const char (&str)[N]) noexcept {
+        for (std::size_t i = 0; i < N; ++i) {
+            data[i] = str[i];
+        }
+    }
+
+    [[nodiscard]] constexpr std::string_view view() const noexcept {
+        return std::string_view(data, N > 0 ? N - 1 : 0);
+    }
+};
+
+// ============================================================================
+// Typed Request Extractors
+// ============================================================================
+
+/// Extracts and validates a JSON request body into DTO `T` (`400` on syntax/type error, `422` on `.validate()` fail).
+template <typename T>
+struct Body {
+    using value_type = T;
+    T value;
+
+    [[nodiscard]] T& operator*() noexcept { return value; }
+    [[nodiscard]] const T& operator*() const noexcept { return value; }
+    [[nodiscard]] T* operator->() noexcept { return &value; }
+    [[nodiscard]] const T* operator->() const noexcept { return &value; }
+    operator const T&() const noexcept { return value; }
+    operator T&() noexcept { return value; }
+};
+
+/// Shorthand extractor for untyped JSON request bodies (`Body<goforge::Json>`).
+using JsonBody = Body<Json>;
+
+/// Extracts a required path parameter (`:name`) converted to `T` (`400` if missing or invalid number).
+template <FixedString Name, typename T = std::string>
+struct Path {
+    using value_type = T;
+    static constexpr auto param_name = Name;
+
+    T value{};
+
+    [[nodiscard]] const T& operator*() const noexcept { return value; }
+    [[nodiscard]] T& operator*() noexcept { return value; }
+    [[nodiscard]] const T* operator->() const noexcept { return &value; }
+    operator const T&() const noexcept { return value; }
+};
+
+/// Extracts an optional query parameter (`?name=val`) converted to `T` (`400` if present but invalid number).
+template <FixedString Name, typename T = std::string>
+struct Query {
+    using value_type = T;
+    static constexpr auto param_name = Name;
+
+    std::optional<T> value{};
+
+    [[nodiscard]] bool has_value() const noexcept { return value.has_value(); }
+    explicit operator bool() const noexcept { return value.has_value(); }
+    [[nodiscard]] const T& operator*() const { return *value; }
+    [[nodiscard]] T value_or(T fallback) const { return value.value_or(std::move(fallback)); }
+};
+
+/// Extracts an optional HTTP request header (`Header<"Authorization">`).
+template <FixedString Name>
+struct Header {
+    static constexpr auto header_name = Name;
+
+    std::optional<std::string> value{};
+
+    [[nodiscard]] bool has_value() const noexcept { return value.has_value(); }
+    explicit operator bool() const noexcept { return value.has_value(); }
+    [[nodiscard]] const std::string& operator*() const { return *value; }
+    [[nodiscard]] std::string value_or(std::string fallback) const { return value.value_or(std::move(fallback)); }
+};
+
+// ============================================================================
+// Smart Handler Return Types (`ApiResponse`, `Result<T>`, Helper Factories)
+// ============================================================================
+
+/**
+ * @struct ApiResponse
+ * @brief Lightweight value-type HTTP response returned directly from typed handlers or controllers.
+ */
+struct ApiResponse {
+    int status{200};
+    std::string content_type{"application/json"};
+    std::string body;
+    std::vector<std::pair<std::string, std::string>> headers;
+
+    ApiResponse& header(std::string key, std::string val) {
+        headers.emplace_back(std::move(key), std::move(val));
+        return *this;
+    }
+
+    void apply(HttpContext& ctx) const {
+        for (const auto& [k, v] : headers) {
+            ctx.set_header(k, v);
+        }
+        if (status == 204 && body.empty()) {
+            ctx.status(204);
+            return;
+        }
+        ctx.data(status, content_type, body);
+    }
+};
+
+/// Returns `200 OK` with empty JSON `{}`.
+inline ApiResponse ok() {
+    return ApiResponse{200, "application/json", "{}", {}};
+}
+
+/// Returns `200 OK` with any JSON-serializable DTO, `Json`/`H`, `std::vector`, or `Page<T>`.
+template <typename T>
+inline ApiResponse ok(const T& payload) {
+    Json j = payload;
+    return ApiResponse{200, "application/json", j.dump(), {}};
+}
+
+/// Returns `201 Created` with any JSON-serializable payload.
+template <typename T>
+inline ApiResponse created(const T& payload) {
+    Json j = payload;
+    return ApiResponse{201, "application/json", j.dump(), {}};
+}
+
+/// Returns `202 Accepted` with any JSON-serializable payload.
+template <typename T>
+inline ApiResponse accepted(const T& payload) {
+    Json j = payload;
+    return ApiResponse{202, "application/json", j.dump(), {}};
+}
+
+/// Returns `204 No Content`.
+inline ApiResponse no_content() {
+    return ApiResponse{204, "text/plain; charset=utf-8", "", {}};
+}
+
+/// Returns plain text with the given HTTP status (default `200`).
+inline ApiResponse text(std::string content, int status_code = 200) {
+    return ApiResponse{status_code, "text/plain; charset=utf-8", std::move(content), {}};
+}
+
+/// Returns HTML with the given HTTP status (default `200`).
+inline ApiResponse html(std::string content, int status_code = 200) {
+    return ApiResponse{status_code, "text/html; charset=utf-8", std::move(content), {}};
+}
+
+/// Returns a structured JSON error response: `{"error": code, "message": msg}`.
+inline ApiResponse err(int status_code, std::string_view code, std::string_view message = "") {
+    return ApiResponse{status_code, "application/json", make_error_json(code, message).dump(), {}};
+}
+
+inline ApiResponse bad_request(std::string_view message = "") {
+    return err(400, "bad_request", message);
+}
+
+inline ApiResponse unauthorized(std::string_view message = "") {
+    return err(401, "unauthorized", message);
+}
+
+inline ApiResponse forbidden(std::string_view message = "") {
+    return err(403, "forbidden", message);
+}
+
+inline ApiResponse not_found(std::string_view message = "") {
+    return err(404, "not_found", message);
+}
+
+inline ApiResponse conflict(std::string_view message = "") {
+    return err(409, "conflict", message);
+}
+
+/**
+ * @class Result
+ * @brief Either a typed success payload `T` (serialized as `200 OK` JSON) or an explicit `ApiResponse`
+ *        (e.g. `created(dto)`, `not_found("...")`, `err(409, ...)`).
+ */
+template <typename T>
+class Result {
+    std::variant<T, ApiResponse> storage_;
+
+public:
+    Result(T val) : storage_(std::move(val)) {}
+    Result(ApiResponse resp) : storage_(std::move(resp)) {}
+
+    [[nodiscard]] bool is_ok() const noexcept { return std::holds_alternative<T>(storage_); }
+
+    void apply(HttpContext& ctx) const {
+        if (const auto* val = std::get_if<T>(&storage_)) {
+            ctx.json(200, *val);
+        } else {
+            std::get<ApiResponse>(storage_).apply(ctx);
+        }
+    }
+};
+
+// ============================================================================
+// Extraction & Result Serialization Traits (used by `Router` / `adapt_handler`)
+// ============================================================================
+namespace detail {
+
+template <typename T> struct IsBodyExtractor : std::false_type {};
+template <typename T> struct IsBodyExtractor<Body<T>> : std::true_type {};
+
+template <typename T> struct IsPathExtractor : std::false_type {};
+template <FixedString Name, typename T> struct IsPathExtractor<Path<Name, T>> : std::true_type {};
+
+template <typename T> struct IsQueryExtractor : std::false_type {};
+template <FixedString Name, typename T> struct IsQueryExtractor<Query<Name, T>> : std::true_type {};
+
+template <typename T> struct IsHeaderExtractor : std::false_type {};
+template <FixedString Name> struct IsHeaderExtractor<Header<Name>> : std::true_type {};
+
+template <typename T> struct IsOptionalType : std::false_type {};
+template <typename T> struct IsOptionalType<std::optional<T>> : std::true_type {};
+
+template <typename T> struct IsResultType : std::false_type {};
+template <typename T> struct IsResultType<Result<T>> : std::true_type {};
+
+template <typename T>
+constexpr bool is_http_extractor_v =
+    IsBodyExtractor<std::remove_cvref_t<T>>::value ||
+    IsPathExtractor<std::remove_cvref_t<T>>::value ||
+    IsQueryExtractor<std::remove_cvref_t<T>>::value ||
+    IsHeaderExtractor<std::remove_cvref_t<T>>::value;
+
+template <typename TargetT>
+std::optional<TargetT> convert_param_value(std::string_view sv) {
+    if constexpr (std::is_same_v<TargetT, std::string>) {
+        return std::string(sv);
+    } else if constexpr (std::is_same_v<TargetT, bool>) {
+        if (sv == "true" || sv == "1" || sv == "yes") return true;
+        if (sv == "false" || sv == "0" || sv == "no") return false;
+        return std::nullopt;
+    } else if constexpr (std::is_arithmetic_v<TargetT>) {
+        return parse_number<TargetT>(sv);
+    } else {
+        static_assert(std::is_same_v<TargetT, std::string>,
+                      "Path/Query extractor supports std::string, bool, and arithmetic types.");
+        return std::nullopt;
+    }
+}
+
+/// Extracts a single HTTP extractor (`Body`, `Path`, `Query`, `Header`) into `std::optional<Clean>`,
+/// automatically writing a 400/422 JSON error and aborting `ctx` on failure.
+template <typename Clean>
+std::optional<Clean> extract_http_arg(HttpContext& ctx) {
+    if constexpr (IsBodyExtractor<Clean>::value) {
+        using DtoT = typename Clean::value_type;
+        if constexpr (std::is_same_v<DtoT, Json>) {
+            auto parsed = ctx.bind_json_value();
+            if (!parsed) return std::nullopt;
+            return Clean{std::move(*parsed)};
+        } else {
+            auto parsed = ctx.bind_json<DtoT>();
+            if (!parsed) return std::nullopt;
+            return Clean{std::move(*parsed)};
+        }
+    } else if constexpr (IsPathExtractor<Clean>::value) {
+        using ValT = typename Clean::value_type;
+        constexpr std::string_view key = Clean::param_name.view();
+        auto raw = ctx.param(key);
+        if (!raw) {
+            ctx.abort_with_json(400, make_error_json("missing_path_param", "missing path parameter: " + std::string(key)));
+            return std::nullopt;
+        }
+        auto parsed = convert_param_value<ValT>(*raw);
+        if (!parsed) {
+            ctx.abort_with_json(400, make_error_json("invalid_path_param", "invalid path parameter: " + std::string(key)));
+            return std::nullopt;
+        }
+        return Clean{std::move(*parsed)};
+    } else if constexpr (IsQueryExtractor<Clean>::value) {
+        using ValT = typename Clean::value_type;
+        constexpr std::string_view key = Clean::param_name.view();
+        auto raw = ctx.query(key);
+        if (!raw) {
+            return Clean{std::nullopt};
+        }
+        auto parsed = convert_param_value<ValT>(*raw);
+        if (!parsed) {
+            ctx.abort_with_json(400, make_error_json("invalid_query_param", "invalid query parameter: " + std::string(key)));
+            return std::nullopt;
+        }
+        return Clean{std::move(*parsed)};
+    } else if constexpr (IsHeaderExtractor<Clean>::value) {
+        constexpr std::string_view key = Clean::header_name.view();
+        auto raw = ctx.header(key);
+        if (!raw) return Clean{std::nullopt};
+        return Clean{std::string(*raw)};
+    }
+}
+
+/// Automatically writes a typed handler's return value to `HttpContext`.
+template <typename R>
+void write_handler_result(HttpContext& ctx, R&& res) {
+    using CleanR = std::remove_cvref_t<R>;
+    if constexpr (std::is_same_v<CleanR, ApiResponse>) {
+        res.apply(ctx);
+    } else if constexpr (std::is_same_v<CleanR, http::HttpResponse>) {
+        ctx.response() = std::forward<R>(res);
+    } else if constexpr (IsResultType<CleanR>::value) {
+        res.apply(ctx);
+    } else if constexpr (IsOptionalType<CleanR>::value) {
+        if (res.has_value()) {
+            write_handler_result(ctx, *res);
+        } else {
+            ctx.error(404, "not_found");
+        }
+    } else if constexpr (std::is_same_v<CleanR, Json>) {
+        ctx.json(200, res);
+    } else if constexpr (std::is_same_v<CleanR, std::string> ||
+                         std::is_same_v<CleanR, std::string_view> ||
+                         std::is_same_v<CleanR, const char*>) {
+        ctx.text(200, std::string(res));
+    } else {
+        ctx.json(200, res);
+    }
+}
+
+} // namespace detail
+} // namespace goforge::web
+
+// Re-export ergonomic HTTP extractors & response helpers into `namespace goforge`
+namespace goforge {
+
+using web::FixedString;
+using web::Body;
+using web::JsonBody;
+using web::Path;
+using web::Query;
+using web::Header;
+using web::ApiResponse;
+using web::Result;
+using web::ok;
+using web::created;
+using web::accepted;
+using web::no_content;
+using web::text;
+using web::html;
+using web::err;
+using web::bad_request;
+using web::unauthorized;
+using web::forbidden;
+using web::not_found;
+using web::conflict;
+
+} // namespace goforge
+// ---- end goforge/web/extractors.hpp ----
 // ---- begin goforge/web/router.hpp ----
 
 /**
@@ -2431,6 +4055,7 @@ public:
 #include <vector>
 
 #include "gorun/gorun.hpp"
+
 
 
 
@@ -2466,43 +4091,127 @@ inline std::string join_paths(std::string_view prefix, std::string_view suffix) 
     return out;
 }
 
-/// Adapts either `void(HttpContext&)` or DI-injected `void(HttpContext&, Deps...)` into a `HandlerFunc`.
+/// Helper invoking any callable or controller member function with mixed HTTP extractors,
+/// `HttpContext&`, and DI services, plus automatic serialization of non-`void` return types.
+template <typename ArgsTuple, typename Invoker, std::size_t... Is>
+void invoke_adapted_handler(HttpContext& ctx, Invoker&& invoker, std::index_sequence<Is...>) {
+    if constexpr (sizeof...(Is) == 0) {
+        using ReturnT = decltype(invoker());
+        if constexpr (std::is_void_v<ReturnT>) {
+            invoker();
+        } else {
+            auto result = invoker();
+            if (!ctx.is_aborted()) {
+                write_handler_result(ctx, std::move(result));
+            }
+        }
+        return;
+    } else {
+        // 1. Pre-extract all HTTP extractors (Body/Path/Query/Header) first so parse/validation failures
+        //    short-circuit cleanly before invoking the handler.
+        auto extract_slot = [&]<typename Param>() {
+            using Clean = std::remove_cvref_t<Param>;
+            if constexpr (is_http_extractor_v<Param>) {
+                return extract_http_arg<Clean>(ctx);
+            } else {
+                return std::true_type{};
+            }
+        };
+
+        auto slots = std::make_tuple(extract_slot.template operator()<std::tuple_element_t<Is, ArgsTuple>>()...);
+
+        bool all_ok = true;
+        auto check_slot = [&]<std::size_t I>() {
+            using Param = std::tuple_element_t<I, ArgsTuple>;
+            if constexpr (is_http_extractor_v<Param>) {
+                if (!std::get<I>(slots).has_value()) {
+                    all_ok = false;
+                }
+            }
+        };
+        (check_slot.template operator()<Is>(), ...);
+        if (!all_ok) {
+            return;
+        }
+
+        // 2. Materialize each argument (extracted HTTP value, HttpContext&, or DI service)
+        auto get_arg = [&]<std::size_t I>() -> decltype(auto) {
+            using Param = std::tuple_element_t<I, ArgsTuple>;
+            using Clean = std::remove_cvref_t<Param>;
+            if constexpr (is_http_extractor_v<Param>) {
+                return static_cast<Param>(*std::get<I>(slots));
+            } else if constexpr (std::is_same_v<Clean, HttpContext>) {
+                return static_cast<HttpContext&>(ctx);
+            } else if constexpr (std::is_same_v<Clean, ServiceScope>) {
+                return ctx.scope();
+            } else if constexpr (std::is_same_v<Clean, ServiceProvider>) {
+                return ctx.scope().root();
+            } else if constexpr (goforge::detail::IsSharedPtr<Clean>::value) {
+                using Elem = typename goforge::detail::IsSharedPtr<Clean>::element_type;
+                using RawT = std::remove_cv_t<Elem>;
+                return std::static_pointer_cast<Elem>(ctx.resolve_ptr<RawT>());
+            } else if constexpr (std::is_reference_v<Param>) {
+                return static_cast<Param>(ctx.resolve<Clean>());
+            } else {
+                return ctx.resolve<Clean>();
+            }
+        };
+
+        using ReturnT = decltype(invoker(get_arg.template operator()<Is>()...));
+        if constexpr (std::is_void_v<ReturnT>) {
+            invoker(get_arg.template operator()<Is>()...);
+        } else {
+            auto result = invoker(get_arg.template operator()<Is>()...);
+            if (!ctx.is_aborted()) {
+                write_handler_result(ctx, std::move(result));
+            }
+        }
+    }
+}
+
+template <typename Fn>
+constexpr bool is_direct_void_handler() noexcept {
+    if constexpr (std::is_invocable_v<Fn&, HttpContext&>) {
+        return std::is_void_v<std::invoke_result_t<Fn&, HttpContext&>>;
+    }
+    return false;
+}
+
+/// Adapts:
+/// 1. Classic `void(HttpContext&)` (zero-overhead fast path),
+/// 2. Classic DI `void(HttpContext&, Deps...)`,
+/// 3. Ergonomic Minimal API `R(Body<Dto>, Path<"id", int>, Query<"q">, MyService&, ...)`,
+/// 4. Zero-lambda Controller member pointers `&UserController::get_by_id` (resolved via DI!).
 template <typename Fn>
 HandlerFunc adapt_handler(Fn&& fn) {
     using DecayedFn = std::decay_t<Fn>;
-    if constexpr (std::is_invocable_r_v<void, DecayedFn&, HttpContext&>) {
+    if constexpr (std::is_member_function_pointer_v<DecayedFn>) {
+        using Traits = goforge::detail::FunctionTraits<DecayedFn>;
+        using ControllerT = typename Traits::class_type;
+        using ArgsTuple = typename Traits::args_tuple;
+        return [method = fn](HttpContext& ctx) {
+            auto& controller = ctx.resolve<ControllerT>();
+            auto caller = [&](auto&&... args) -> decltype(auto) {
+                return (controller.*method)(std::forward<decltype(args)>(args)...);
+            };
+            invoke_adapted_handler<ArgsTuple>(
+                ctx,
+                caller,
+                std::make_index_sequence<std::tuple_size_v<ArgsTuple>>{}
+            );
+        };
+    } else if constexpr (is_direct_void_handler<DecayedFn>()) {
         return HandlerFunc(std::forward<Fn>(fn));
     } else {
         using Traits = goforge::detail::FunctionTraits<DecayedFn>;
         using ArgsTuple = typename Traits::args_tuple;
-        static_assert(
-            std::tuple_size_v<ArgsTuple> >= 1 &&
-            std::is_same_v<std::remove_cvref_t<std::tuple_element_t<0, ArgsTuple>>, HttpContext>,
-            "Handler first parameter must be HttpContext& (e.g., [](HttpContext& c, MyService& svc) { ... })."
-        );
-
         auto holder = std::make_shared<DecayedFn>(std::forward<Fn>(fn));
         return [holder](HttpContext& ctx) {
-            auto call_with_deps = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                auto resolve_dep = [&]<typename Param>() -> decltype(auto) {
-                    using Clean = std::remove_cvref_t<Param>;
-                    if constexpr (std::is_same_v<Clean, ServiceScope>) {
-                        return ctx.scope();
-                    } else if constexpr (std::is_same_v<Clean, ServiceProvider>) {
-                        return ctx.scope().root();
-                    } else if constexpr (goforge::detail::IsSharedPtr<Clean>::value) {
-                        using Elem = typename goforge::detail::IsSharedPtr<Clean>::element_type;
-                        using RawT = std::remove_cv_t<Elem>;
-                        return std::static_pointer_cast<Elem>(ctx.resolve_ptr<RawT>());
-                    } else if constexpr (std::is_reference_v<Param>) {
-                        return static_cast<Param>(ctx.resolve<Clean>());
-                    } else {
-                        return ctx.resolve<Clean>();
-                    }
-                };
-                (*holder)(ctx, resolve_dep.template operator()<std::tuple_element_t<Is + 1, ArgsTuple>>()...);
-            };
-            call_with_deps(std::make_index_sequence<std::tuple_size_v<ArgsTuple> - 1>{});
+            invoke_adapted_handler<ArgsTuple>(
+                ctx,
+                *holder,
+                std::make_index_sequence<std::tuple_size_v<ArgsTuple>>{}
+            );
         };
     }
 }
@@ -3488,4 +5197,425 @@ public:
 } // namespace goforge::obs
 // ---- end goforge/obs/metrics.hpp ----
 
+
+// ---- begin goforge/web_app.hpp ----
+
+/**
+ * @file web_app.hpp
+ * @brief Lightweight, zero-boilerplate `WebApp` facade over `AppBuilder`, `Router`, `Lifecycle`,
+ *        Observability, and `HttpServer`, with fluent route groups and zero-lambda `ControllerGroup`.
+ */
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+
+
+
+
+
+
+
+namespace goforge {
+
+/**
+ * @struct WebAppConfig
+ * @brief Unified configuration for `goforge::WebApp` (HTTP server + App lifecycle + BlockingPool).
+ */
+struct WebAppConfig {
+    std::string host{"127.0.0.1"};
+    std::uint16_t port{8080};
+    std::size_t io_threads{2};
+    std::size_t max_connections{10000};
+    std::size_t blocking_pool_threads{4};
+    std::chrono::milliseconds read_timeout{std::chrono::seconds(15)};
+    std::chrono::milliseconds write_timeout{std::chrono::seconds(15)};
+    std::chrono::milliseconds start_timeout{std::chrono::seconds(15)};
+    std::chrono::milliseconds stop_timeout{std::chrono::seconds(15)};
+};
+
+class WebApp;
+
+/**
+ * @class ControllerGroup
+ * @brief Zero-lambda fluent route binder for a DI-managed controller class `Controller`.
+ *
+ * Example:
+ * ```cpp
+ * app.controller<UserController, IUserRepo>("/api/v1/users")
+ *    .post("", &UserController::create)
+ *    .get("/:id", &UserController::get_by_id);
+ * ```
+ */
+template <typename Controller>
+class ControllerGroup {
+    web::RouteGroup group_;
+
+public:
+    explicit ControllerGroup(web::RouteGroup group) : group_(std::move(group)) {}
+
+    ControllerGroup& use(web::HandlerFunc mw) {
+        group_.use(std::move(mw));
+        return *this;
+    }
+
+    ControllerGroup& timeout(std::chrono::milliseconds dur) {
+        group_.use(web::middleware::timeout(dur));
+        return *this;
+    }
+
+    ControllerGroup& rate_limit(std::size_t max_concurrent) {
+        group_.use(web::middleware::rate_limit(max_concurrent));
+        return *this;
+    }
+
+    template <typename MethodPtr>
+        requires std::is_member_function_pointer_v<std::decay_t<MethodPtr>>
+    ControllerGroup& handle(std::string_view method, std::string_view path, MethodPtr fn) {
+        using Traits = detail::FunctionTraits<std::decay_t<MethodPtr>>;
+        static_assert(
+            std::is_base_of_v<typename Traits::class_type, Controller>,
+            "Member function pointer must belong to this Controller class."
+        );
+        group_.handle(method, path, fn);
+        return *this;
+    }
+
+    template <typename MethodPtr>
+    ControllerGroup& get(std::string_view path, MethodPtr fn) { return handle("GET", path, fn); }
+
+    template <typename MethodPtr>
+    ControllerGroup& post(std::string_view path, MethodPtr fn) { return handle("POST", path, fn); }
+
+    template <typename MethodPtr>
+    ControllerGroup& put(std::string_view path, MethodPtr fn) { return handle("PUT", path, fn); }
+
+    template <typename MethodPtr>
+    ControllerGroup& del(std::string_view path, MethodPtr fn) { return handle("DELETE", path, fn); }
+
+    template <typename MethodPtr>
+    ControllerGroup& patch(std::string_view path, MethodPtr fn) { return handle("PATCH", path, fn); }
+};
+
+/**
+ * @class WebGroup
+ * @brief Fluent wrapper over `web::RouteGroup` adding middleware shortcuts and nested `.controller<C>()`.
+ */
+class WebGroup {
+    std::shared_ptr<void> app_state_;
+    WebApp* app_owner_{nullptr};
+    web::RouteGroup group_;
+
+    friend class WebApp;
+    WebGroup(std::shared_ptr<void> app_state, WebApp* owner, web::RouteGroup group)
+        : app_state_(std::move(app_state)), app_owner_(owner), group_(std::move(group)) {}
+
+public:
+    WebGroup& use(web::HandlerFunc mw) {
+        group_.use(std::move(mw));
+        return *this;
+    }
+
+    WebGroup& timeout(std::chrono::milliseconds dur) {
+        group_.use(web::middleware::timeout(dur));
+        return *this;
+    }
+
+    WebGroup& rate_limit(std::size_t max_concurrent) {
+        group_.use(web::middleware::rate_limit(max_concurrent));
+        return *this;
+    }
+
+    template <typename Validator>
+    WebGroup& bearer_auth(Validator&& validator) {
+        group_.use(web::middleware::bearer_auth(std::forward<Validator>(validator)));
+        return *this;
+    }
+
+    [[nodiscard]] WebGroup group(std::string_view sub_prefix) {
+        return WebGroup(app_state_, app_owner_, group_.group(sub_prefix));
+    }
+
+    template <typename Controller, typename... Deps>
+    [[nodiscard]] ControllerGroup<Controller> controller(std::string_view sub_prefix = "");
+
+    template <typename Fn>
+    WebGroup& handle(std::string_view method, std::string_view path, Fn&& fn) {
+        group_.handle(method, path, std::forward<Fn>(fn));
+        return *this;
+    }
+
+    template <typename Fn>
+    WebGroup& get(std::string_view path, Fn&& fn) { return handle("GET", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebGroup& post(std::string_view path, Fn&& fn) { return handle("POST", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebGroup& put(std::string_view path, Fn&& fn) { return handle("PUT", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebGroup& del(std::string_view path, Fn&& fn) { return handle("DELETE", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebGroup& patch(std::string_view path, Fn&& fn) { return handle("PATCH", path, std::forward<Fn>(fn)); }
+};
+
+/**
+ * @class WebApp
+ * @brief Lightweight ergonomic application handle unifying DI, Router, Observability,
+ *        and `HttpServer` in ~10 lines of C++20. Uses shared handle semantics so fluent chaining
+ *        like `auto app = WebApp::create({.port = 8080}).singleton<...>().use_defaults();` works seamlessly.
+ */
+class WebApp {
+    struct State {
+        WebAppConfig config;
+        AppBuilder builder;
+        std::shared_ptr<web::Router> router;
+        std::shared_ptr<obs::StructuredLogger> logger;
+        std::shared_ptr<obs::MetricsRegistry> metrics;
+        std::shared_ptr<obs::HealthRegistry> health;
+        std::unique_ptr<App> app;
+        bool defaults_applied{false};
+
+        explicit State(WebAppConfig cfg)
+            : config(std::move(cfg))
+            , router(std::make_shared<web::Router>())
+            , logger(std::make_shared<obs::StructuredLogger>())
+            , metrics(std::make_shared<obs::MetricsRegistry>())
+            , health(std::make_shared<obs::HealthRegistry>()) {}
+
+        void ensure_built() {
+            if (app) return;
+
+            builder.with_config(AppConfig{
+                .start_timeout = config.start_timeout,
+                .stop_timeout = config.stop_timeout,
+                .blocking_pool_threads = config.blocking_pool_threads
+            });
+
+            builder.provide_instance(router);
+            builder.provide_instance(logger);
+            builder.provide_instance(metrics);
+            builder.provide_instance(health);
+
+
+            app = builder.build();
+        }
+    };
+
+    std::shared_ptr<State> state_;
+
+    friend class WebGroup;
+
+    template <typename Controller, typename... Deps>
+    static void register_controller_in_state(State& st) {
+        if constexpr (sizeof...(Deps) > 0) {
+            st.builder.provide_scoped<Controller, Deps...>();
+        } else if (!st.builder.services().template has<Controller>()) {
+            static_assert(
+                std::is_default_constructible_v<Controller>,
+                "Controller with constructor dependencies must either be registered via "
+                "app.scoped<MyController, Dep1, ...>() or app.controller<MyController, Dep1, ...>(prefix)."
+            );
+            st.builder.provide_scoped<Controller>();
+        }
+    }
+
+public:
+    explicit WebApp(WebAppConfig cfg = {})
+        : state_(std::make_shared<State>(std::move(cfg))) {}
+
+    WebApp(const WebApp&) = default;
+    WebApp& operator=(const WebApp&) = default;
+    WebApp(WebApp&&) noexcept = default;
+    WebApp& operator=(WebApp&&) noexcept = default;
+
+    /// Factory entry point: `auto app = goforge::WebApp::create({.port = 8080});`
+    [[nodiscard]] static WebApp create(WebAppConfig cfg = {}) {
+        return WebApp(std::move(cfg));
+    }
+
+    // ---- Concise DI Registration (auto-detects Interface -> Impl bindings!) ----
+
+    template <typename T>
+    WebApp& singleton() {
+        state_->builder.provide_singleton<T>();
+        return *this;
+    }
+
+    template <typename T1, typename T2, typename... Rest>
+    WebApp& singleton() {
+        if constexpr (!std::is_same_v<T1, T2> && std::is_base_of_v<T1, T2>) {
+            state_->builder.provide_singleton_as<T1, T2, Rest...>();
+        } else {
+            state_->builder.provide_singleton<T1, T2, Rest...>();
+        }
+        return *this;
+    }
+
+    template <typename T>
+    WebApp& scoped() {
+        state_->builder.provide_scoped<T>();
+        return *this;
+    }
+
+    template <typename T1, typename T2, typename... Rest>
+    WebApp& scoped() {
+        if constexpr (!std::is_same_v<T1, T2> && std::is_base_of_v<T1, T2>) {
+            state_->builder.provide_scoped_as<T1, T2, Rest...>();
+        } else {
+            state_->builder.provide_scoped<T1, T2, Rest...>();
+        }
+        return *this;
+    }
+
+    template <typename T>
+    WebApp& transient() {
+        state_->builder.provide_transient<T>();
+        return *this;
+    }
+
+    template <typename T1, typename T2, typename... Rest>
+    WebApp& transient() {
+        if constexpr (!std::is_same_v<T1, T2> && std::is_base_of_v<T1, T2>) {
+            state_->builder.provide_transient_as<T1, T2, Rest...>();
+        } else {
+            state_->builder.provide_transient<T1, T2, Rest...>();
+        }
+        return *this;
+    }
+
+    template <typename T>
+    WebApp& instance(T&& value) {
+        state_->builder.provide_instance(std::forward<T>(value));
+        return *this;
+    }
+
+    template <typename Factory>
+    WebApp& provide(Factory&& factory, Lifetime lifetime = Lifetime::Singleton) {
+        state_->builder.provide(std::forward<Factory>(factory), lifetime);
+        return *this;
+    }
+
+    template <typename Fn>
+    WebApp& invoke(Fn&& fn) {
+        state_->builder.invoke(std::forward<Fn>(fn));
+        return *this;
+    }
+
+    // ---- Middleware & Built-in Observability ----
+
+    WebApp& use(web::HandlerFunc mw) {
+        state_->router->use(std::move(mw));
+        return *this;
+    }
+
+    /// Installs metrics, panic recovery, JSON access logging, and mounts `/healthz`, `/readyz`, `/metrics`.
+    WebApp& use_defaults(bool enable_access_log = true) {
+        if (!state_->defaults_applied) {
+            state_->defaults_applied = true;
+            state_->router->use(state_->metrics->middleware());
+            state_->router->use(web::middleware::recovery());
+            if (enable_access_log) {
+                state_->router->use(state_->logger->access_log_middleware());
+            }
+            state_->health->mount(*state_->router, *state_->metrics);
+        }
+        return *this;
+    }
+
+    WebApp& use_recovery() { return use(web::middleware::recovery()); }
+    WebApp& use_metrics() { return use(state_->metrics->middleware()); }
+    WebApp& use_access_log() { return use(state_->logger->access_log_middleware()); }
+    WebApp& use_timeout(std::chrono::milliseconds dur) { return use(web::middleware::timeout(dur)); }
+    WebApp& use_rate_limit(std::size_t max_concurrent) { return use(web::middleware::rate_limit(max_concurrent)); }
+
+    // ---- Direct Routes, Groups & Controllers ----
+
+    [[nodiscard]] WebGroup group(std::string_view prefix) {
+        return WebGroup(state_, this, state_->router->group(prefix));
+    }
+
+    template <typename Controller, typename... Deps>
+    [[nodiscard]] ControllerGroup<Controller> controller(std::string_view prefix = "") {
+        register_controller_in_state<Controller, Deps...>(*state_);
+        return ControllerGroup<Controller>(state_->router->group(prefix));
+    }
+
+    template <typename Fn>
+    WebApp& handle(std::string_view method, std::string_view path, Fn&& fn) {
+        state_->router->handle(method, path, std::forward<Fn>(fn));
+        return *this;
+    }
+
+    template <typename Fn>
+    WebApp& get(std::string_view path, Fn&& fn) { return handle("GET", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebApp& post(std::string_view path, Fn&& fn) { return handle("POST", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebApp& put(std::string_view path, Fn&& fn) { return handle("PUT", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebApp& del(std::string_view path, Fn&& fn) { return handle("DELETE", path, std::forward<Fn>(fn)); }
+
+    template <typename Fn>
+    WebApp& patch(std::string_view path, Fn&& fn) { return handle("PATCH", path, std::forward<Fn>(fn)); }
+
+    // ---- Component Accessors ----
+    [[nodiscard]] web::Router& router() noexcept { return *state_->router; }
+    [[nodiscard]] obs::StructuredLogger& logger() noexcept { return *state_->logger; }
+    [[nodiscard]] obs::MetricsRegistry& metrics() noexcept { return *state_->metrics; }
+    [[nodiscard]] obs::HealthRegistry& health() noexcept { return *state_->health; }
+
+    [[nodiscard]] App& app() {
+        state_->ensure_built();
+        return *state_->app;
+    }
+
+    // ---- Execution & In-Memory Dispatch (works with or without Asio!) ----
+
+    void start() {
+        state_->ensure_built();
+        state_->app->start();
+    }
+
+    std::vector<std::string> stop() {
+        if (!state_->app) return {};
+        return state_->app->stop();
+    }
+
+    void run() {
+        state_->ensure_built();
+        state_->app->run_until_signal();
+    }
+
+    /// Dispatches a synthetic `HttpRequest` directly through the DI + Router pipeline (ideal for tests & playgrounds).
+    [[nodiscard]] http::HttpResponse dispatch(const http::HttpRequest& req,
+                                              gorun::Context go_ctx = gorun::background()) {
+        state_->ensure_built();
+        return state_->router->dispatch(req, std::move(go_ctx), &state_->app->services());
+    }
+
+};
+
+template <typename Controller, typename... Deps>
+inline ControllerGroup<Controller> WebGroup::controller(std::string_view sub_prefix) {
+    auto st = std::static_pointer_cast<WebApp::State>(app_state_);
+    WebApp::register_controller_in_state<Controller, Deps...>(*st);
+    return ControllerGroup<Controller>(group_.group(sub_prefix));
+}
+
+} // namespace goforge
+// ---- end goforge/web_app.hpp ----
 // ---- end goforge/goforge.hpp ----
