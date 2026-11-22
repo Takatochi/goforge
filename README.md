@@ -68,13 +68,32 @@ Explore the full documentation, visual benchmarks, and run real `goforge` C++20 
 
 ---
 
-## Quick Start & Installation
+## Quick Start & Installation (6 Ways to Use `goforge`)
 
-### CMake `FetchContent` (Recommended)
+`goforge` is header-only and runs **100% natively on `gorun` (`gorun::net`)** with **zero Asio dependency**. Choose any of the 6 integration methods below:
+
+| Method | Best For | Auto-Fetches `gorun`, JSON & SQLite? |
+| :--- | :--- | :---: |
+| **1. CMake `FetchContent`** | Most CMake projects (zero manual setup) | Yes (automatic) |
+| **2. Single-Header Drop-In** | Makefiles, Meson, Bazel, or fast prototypes | 3 header files via `curl` |
+| **3. Git Submodule** | Pinned vendored deps & offline builds | Supports local `GOFORGE_LOCAL_GORUN_DIR` |
+| **4. System CMake Install** | Sharing `goforge` across local repos via `find_package` | Uses installed deps |
+| **5. vcpkg (Overlay Ports)** | Teams using `vcpkg` manifests & optional `sqlite` feature | Managed by `vcpkg` |
+| **6. Conan 2.0** | Teams using Conan 2.0 profiles & `CMakeDeps` | Managed by `Conan` |
+
+### Option 1: CMake `FetchContent` (Recommended — Zero Manual Setup)
+
+Add this to your `CMakeLists.txt`. CMake automatically fetches `goforge v0.4.0`, `gorun v0.4.0`, `nlohmann_json v3.11.3`, and embedded `SQLite 3`:
 
 ```cmake
-include(FetchContent)
+cmake_minimum_required(VERSION 3.20)
+project(my_service LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
 
+# Optional: disable embedded SQLite 3 if you only need HTTP/DI/JSON/Query (no SQLite ORM):
+# set(GOFORGE_ENABLE_SQLITE OFF CACHE BOOL "" FORCE)
+
+include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
@@ -86,38 +105,116 @@ add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)
 ```
 
-### vcpkg & Conan 2.0 Package Managers
+### Option 2: Single-Header Drop-In (No CMake Required)
 
-Ready-to-use package recipes (with verified `v0.4.0` SHA512/SHA256 checksums) are included in [`packaging/vcpkg/`](./packaging/vcpkg/) and [`packaging/conan/`](./packaging/conan/):
+Download the 3 header-only files (`goforge.hpp`, `gorun.hpp`, `nlohmann/json.hpp`) and compile directly:
 
 ```bash
-# vcpkg (overlay ports — pass both gorun and goforge overlay ports):
-vcpkg install goforge \
-  --overlay-ports=/path/to/gorun/packaging/vcpkg \
-  --overlay-ports=/path/to/goforge/packaging/vcpkg
+mkdir -p include/goforge include/gorun include/nlohmann
+curl -fLo include/goforge/goforge.hpp \
+  https://raw.githubusercontent.com/Takatochi/goforge/v0.4.0/single_include/goforge/goforge.hpp
+curl -fLo include/gorun/gorun.hpp \
+  https://raw.githubusercontent.com/Takatochi/gorun/v0.4.0/single_include/gorun/gorun.hpp
+curl -fLo include/nlohmann/json.hpp \
+  https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp
 
-# Conan 2.0 (build gorun first, then goforge + test_package):
-conan create /path/to/gorun/packaging/conan --version=0.4.0 --build=missing
-conan create /path/to/goforge/packaging/conan --version=0.4.0 --build=missing
+# Linux / macOS (GCC or Clang):
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service
+
+# Windows MinGW / GCC:
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service.exe -lws2_32 -lmswsock
+
+# Windows MSVC (Developer Command Prompt):
+cl /std:c++20 /O2 /EHsc /Iinclude main.cpp ws2_32.lib mswsock.lib
 ```
 
-Then in your `CMakeLists.txt`:
+*(To also enable `SqliteDriver` in single-header mode, compile with `-DGOFORGE_HAS_SQLITE=1` and link `-lsqlite3`.)*
 
+### Option 3: Git Submodule + `add_subdirectory`
+
+```bash
+git submodule add https://github.com/Takatochi/gorun.git external/gorun
+git -C external/gorun checkout v0.4.0
+git submodule add https://github.com/Takatochi/goforge.git external/goforge
+git -C external/goforge checkout v0.4.0
+```
+Then in your `CMakeLists.txt`:
+```cmake
+set(GOFORGE_LOCAL_GORUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/gorun" CACHE PATH "" FORCE)
+add_subdirectory(external/goforge)
+target_link_libraries(my_service PRIVATE goforge::goforge)
+```
+
+### Option 4: System-Wide CMake Install + `find_package(goforge)`
+
+When `gorun`, `nlohmann_json`, and (optionally) `SQLite3` are installed in your prefix (e.g. `/usr/local`), install `goforge` once with `-DGOFORGE_INSTALL=ON`:
+
+```bash
+git clone --branch v0.4.0 https://github.com/Takatochi/goforge.git
+cmake -S goforge -B goforge/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/usr/local \
+  -DGOFORGE_BUILD_TESTS=OFF -DGOFORGE_BUILD_EXAMPLES=OFF -DGOFORGE_BUILD_BENCHMARKS=OFF \
+  -DGOFORGE_INSTALL=ON
+cmake --install goforge/build --prefix /usr/local
+```
+Then in any downstream `CMakeLists.txt`:
 ```cmake
 find_package(goforge 0.4.0 REQUIRED CONFIG)
 target_link_libraries(my_service PRIVATE goforge::goforge)
 ```
 
-### Single-Header Drop-In
+### Option 5: vcpkg (Overlay Ports & Manifest Mode)
 
-Download [`single_include/goforge/goforge.hpp`](./single_include/goforge/goforge.hpp), [`single_include/gorun/gorun.hpp`](https://raw.githubusercontent.com/Takatochi/gorun/v0.4.0/single_include/gorun/gorun.hpp), and `nlohmann/json.hpp`, then compile directly:
+Ready-to-use port files (with verified `v0.4.0` SHA512 and optional `sqlite` feature) live in [`packaging/vcpkg/`](./packaging/vcpkg/):
 
 ```bash
-# Linux / macOS:
-g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service
-# Windows (MinGW/GCC):
-g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service.exe -lws2_32 -lmswsock
+git clone https://github.com/Takatochi/gorun.git
+git clone https://github.com/Takatochi/goforge.git
+
+# Install with default SQLite 3 ORM support:
+vcpkg install goforge \
+  --overlay-ports=./gorun/packaging/vcpkg \
+  --overlay-ports=./goforge/packaging/vcpkg
+
+# Or without SQLite 3:
+vcpkg install "goforge[core]" \
+  --overlay-ports=./gorun/packaging/vcpkg \
+  --overlay-ports=./goforge/packaging/vcpkg
 ```
+
+Or in your project's `vcpkg.json` manifest:
+```json
+{
+  "name": "my-service",
+  "version-string": "1.0.0",
+  "dependencies": ["goforge"]
+}
+```
+And in `CMakeLists.txt`: `find_package(goforge CONFIG REQUIRED)` + `target_link_libraries(my_service PRIVATE goforge::goforge)`.
+
+### Option 6: Conan 2.0
+
+Conan 2.0 recipes (with `conandata.yml`, `with_sqlite` option, and `test_package/`) live in [`packaging/conan/`](./packaging/conan/):
+
+```bash
+git clone https://github.com/Takatochi/gorun.git
+git clone https://github.com/Takatochi/goforge.git
+
+conan create gorun/packaging/conan --version=0.4.0 --build=missing
+conan create goforge/packaging/conan --version=0.4.0 --build=missing
+# Optional: disable SQLite with -o goforge/*:with_sqlite=False
+```
+
+Then add `goforge/0.4.0` to your project's `conanfile.txt`:
+```ini
+[requires]
+goforge/0.4.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+```
+And in `CMakeLists.txt`: `find_package(goforge CONFIG REQUIRED)` + `target_link_libraries(my_service PRIVATE goforge::goforge)`.
 
 ### Lightweight REST Microservice (`WebApp` + Zero-Lambda Controllers + Fluent Query AST)
 

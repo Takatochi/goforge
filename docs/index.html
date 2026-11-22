@@ -515,10 +515,24 @@
 
     <!-- INSTALLATION -->
     <section id="install">
-      <h2>Quick Installation (CMake FetchContent, vcpkg &amp; Conan 2.0)</h2>
-      <p><code>goforge</code> is header-only and runs 100% natively on <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> (with built-in IOCP / epoll / kqueue networking &mdash; zero Asio dependency!). CMake <code>FetchContent</code> pulls <code>gorun</code>, <code>nlohmann/json</code>, and embedded SQLite 3 automatically:</p>
-      <pre><code>include(FetchContent)
+      <h2>Quick Installation (6 Integration Methods)</h2>
+      <p><code>goforge</code> is header-only and runs 100% natively on <a href="https://github.com/Takatochi/gorun" style="color: var(--accent);"><code>gorun</code></a> (built-in IOCP / epoll / kqueue &mdash; zero Asio dependency!). Choose any workflow:</p>
+      <div class="playground-tabs" style="margin-bottom: 0.9rem;">
+        <button class="tab-btn install-tab active" onclick="switchInstallTab(0)">1. CMake FetchContent</button>
+        <button class="tab-btn install-tab" onclick="switchInstallTab(1)">2. Single-Header</button>
+        <button class="tab-btn install-tab" onclick="switchInstallTab(2)">3. Git Submodule</button>
+        <button class="tab-btn install-tab" onclick="switchInstallTab(3)">4. CMake Install</button>
+        <button class="tab-btn install-tab" onclick="switchInstallTab(4)">5. vcpkg</button>
+        <button class="tab-btn install-tab" onclick="switchInstallTab(5)">6. Conan 2.0</button>
+      </div>
 
+      <div class="install-panel" data-install="0">
+        <p><strong>Recommended for CMake projects</strong> &mdash; automatically pulls <code>goforge v0.4.0</code>, <code>gorun v0.4.0</code>, <code>nlohmann/json</code>, and embedded SQLite 3 (pass <code>-DGOFORGE_ENABLE_SQLITE=OFF</code> if you do not need SQLite):</p>
+        <pre><code>cmake_minimum_required(VERSION 3.20)
+project(my_service LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+
+include(FetchContent)
 FetchContent_Declare(
     goforge
     GIT_REPOSITORY https://github.com/Takatochi/goforge.git
@@ -528,13 +542,87 @@ FetchContent_MakeAvailable(goforge)
 
 add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
-      <p>Package manager recipes are also bundled under <code>packaging/vcpkg/</code> and <code>packaging/conan/</code>:</p>
-      <pre><code># vcpkg overlay ports (pass both gorun and goforge):
-vcpkg install goforge --overlay-ports=/path/to/gorun/packaging/vcpkg --overlay-ports=/path/to/goforge/packaging/vcpkg
+      </div>
 
-# Conan 2.0 recipes (build gorun first, then goforge):
-conan create /path/to/gorun/packaging/conan --version=0.4.0 --build=missing
-conan create /path/to/goforge/packaging/conan --version=0.4.0 --build=missing</code></pre>
+      <div class="install-panel" data-install="1" style="display:none;">
+        <p>Drop in 3 single-header files (no CMake needed) and compile directly:</p>
+        <pre><code>mkdir -p include/goforge include/gorun include/nlohmann
+curl -fLo include/goforge/goforge.hpp \
+  https://raw.githubusercontent.com/Takatochi/goforge/v0.4.0/single_include/goforge/goforge.hpp
+curl -fLo include/gorun/gorun.hpp \
+  https://raw.githubusercontent.com/Takatochi/gorun/v0.4.0/single_include/gorun/gorun.hpp
+curl -fLo include/nlohmann/json.hpp \
+  https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp
+
+# Linux / macOS:
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service
+# Windows MinGW / GCC:
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service.exe -lws2_32 -lmswsock
+# Windows MSVC:
+cl /std:c++20 /O2 /EHsc /Iinclude main.cpp ws2_32.lib mswsock.lib</code></pre>
+      </div>
+
+      <div class="install-panel" data-install="2" style="display:none;">
+        <p>Vendor both repositories as Git submodules for offline/pinned builds:</p>
+        <pre><code>git submodule add https://github.com/Takatochi/gorun.git external/gorun
+git -C external/gorun checkout v0.4.0
+git submodule add https://github.com/Takatochi/goforge.git external/goforge
+git -C external/goforge checkout v0.4.0</code></pre>
+        <pre><code>set(GOFORGE_LOCAL_GORUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/gorun" CACHE PATH "" FORCE)
+add_subdirectory(external/goforge)
+target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
+      </div>
+
+      <div class="install-panel" data-install="3" style="display:none;">
+        <p>Install once into a shared prefix (with <code>gorun</code> and <code>nlohmann_json</code> already installed in that prefix) and consume via <code>find_package</code>:</p>
+        <pre><code>git clone --branch v0.4.0 https://github.com/Takatochi/goforge.git
+cmake -S goforge -B goforge/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/usr/local \
+  -DGOFORGE_BUILD_TESTS=OFF -DGOFORGE_BUILD_EXAMPLES=OFF -DGOFORGE_BUILD_BENCHMARKS=OFF \
+  -DGOFORGE_INSTALL=ON
+cmake --install goforge/build --prefix /usr/local</code></pre>
+        <pre><code>find_package(goforge 0.4.0 REQUIRED CONFIG)
+target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
+      </div>
+
+      <div class="install-panel" data-install="4" style="display:none;">
+        <p>Install via <code>vcpkg</code> overlay ports (with verified <code>v0.4.0</code> SHA512 and optional <code>sqlite</code> feature):</p>
+        <pre><code>git clone https://github.com/Takatochi/gorun.git
+git clone https://github.com/Takatochi/goforge.git
+
+vcpkg install goforge \
+  --overlay-ports=./gorun/packaging/vcpkg \
+  --overlay-ports=./goforge/packaging/vcpkg
+
+# Or without SQLite 3:
+vcpkg install "goforge[core]" \
+  --overlay-ports=./gorun/packaging/vcpkg \
+  --overlay-ports=./goforge/packaging/vcpkg</code></pre>
+        <pre><code>find_package(goforge CONFIG REQUIRED)
+target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
+      </div>
+
+      <div class="install-panel" data-install="5" style="display:none;">
+        <p>Build both recipes into your local Conan 2.0 cache (verified <code>v0.4.0</code> SHA256 + <code>with_sqlite</code> option):</p>
+        <pre><code>git clone https://github.com/Takatochi/gorun.git
+git clone https://github.com/Takatochi/goforge.git
+
+conan create gorun/packaging/conan --version=0.4.0 --build=missing
+conan create goforge/packaging/conan --version=0.4.0 --build=missing</code></pre>
+        <pre><code># conanfile.txt
+[requires]
+goforge/0.4.0
+
+[generators]
+CMakeDeps
+CMakeToolchain</code></pre>
+      </div>
+      <script>
+        function switchInstallTab(idx) {
+          document.querySelectorAll('.install-tab').forEach((b, i) => b.classList.toggle('active', i === idx));
+          document.querySelectorAll('.install-panel').forEach((p, i) => p.style.display = (i === idx) ? '' : 'none');
+        }
+      </script>
     </section>
 
     <!-- ARCHITECTURE -->
