@@ -88,14 +88,17 @@ target_link_libraries(my_service PRIVATE goforge::goforge)
 
 ### vcpkg & Conan 2.0 Package Managers
 
-Ready-to-use package recipes are included in [`packaging/vcpkg/`](./packaging/vcpkg/) and [`packaging/conan/`](./packaging/conan/):
+Ready-to-use package recipes (with verified `v0.4.0` SHA512/SHA256 checksums) are included in [`packaging/vcpkg/`](./packaging/vcpkg/) and [`packaging/conan/`](./packaging/conan/):
 
 ```bash
-# vcpkg (overlay port):
-vcpkg install goforge --overlay-ports=./packaging/vcpkg
+# vcpkg (overlay ports — pass both gorun and goforge overlay ports):
+vcpkg install goforge \
+  --overlay-ports=/path/to/gorun/packaging/vcpkg \
+  --overlay-ports=/path/to/goforge/packaging/vcpkg
 
-# Conan 2.0 (local recipe + test_package):
-conan create packaging/conan --version=0.4.0 --build=missing
+# Conan 2.0 (build gorun first, then goforge + test_package):
+conan create /path/to/gorun/packaging/conan --version=0.4.0 --build=missing
+conan create /path/to/goforge/packaging/conan --version=0.4.0 --build=missing
 ```
 
 Then in your `CMakeLists.txt`:
@@ -103,6 +106,17 @@ Then in your `CMakeLists.txt`:
 ```cmake
 find_package(goforge 0.4.0 REQUIRED CONFIG)
 target_link_libraries(my_service PRIVATE goforge::goforge)
+```
+
+### Single-Header Drop-In
+
+Download [`single_include/goforge/goforge.hpp`](./single_include/goforge/goforge.hpp), [`single_include/gorun/gorun.hpp`](https://raw.githubusercontent.com/Takatochi/gorun/v0.4.0/single_include/gorun/gorun.hpp), and `nlohmann/json.hpp`, then compile directly:
+
+```bash
+# Linux / macOS:
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service
+# Windows (MinGW/GCC):
+g++ -std=c++20 -O2 -pthread -Iinclude main.cpp -o my_service.exe -lws2_32 -lmswsock
 ```
 
 ### Lightweight REST Microservice (`WebApp` + Zero-Lambda Controllers + Fluent Query AST)

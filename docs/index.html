@@ -529,11 +529,12 @@ FetchContent_MakeAvailable(goforge)
 add_executable(my_service main.cpp)
 target_link_libraries(my_service PRIVATE goforge::goforge)</code></pre>
       <p>Package manager recipes are also bundled under <code>packaging/vcpkg/</code> and <code>packaging/conan/</code>:</p>
-      <pre><code># vcpkg overlay port:
-vcpkg install goforge --overlay-ports=./packaging/vcpkg
+      <pre><code># vcpkg overlay ports (pass both gorun and goforge):
+vcpkg install goforge --overlay-ports=/path/to/gorun/packaging/vcpkg --overlay-ports=/path/to/goforge/packaging/vcpkg
 
-# Conan 2.0 recipe:
-conan create packaging/conan --version=0.4.0 --build=missing</code></pre>
+# Conan 2.0 recipes (build gorun first, then goforge):
+conan create /path/to/gorun/packaging/conan --version=0.4.0 --build=missing
+conan create /path/to/goforge/packaging/conan --version=0.4.0 --build=missing</code></pre>
     </section>
 
     <!-- ARCHITECTURE -->
@@ -1356,15 +1357,12 @@ int main() {
       if (cachedHeaders) return cachedHeaders;
       const [goforgeHdr, gorunHdr, nlohmannHdr] = await Promise.all([
         fetchFirstAvailable([
-          './goforge.hpp',
           'https://raw.githubusercontent.com/Takatochi/goforge/main/single_include/goforge/goforge.hpp'
         ], 'namespace goforge'),
         fetchFirstAvailable([
-          './gorun.hpp',
           'https://raw.githubusercontent.com/Takatochi/gorun/main/single_include/gorun/gorun.hpp'
         ], 'namespace gorun'),
         fetchFirstAvailable([
-          './nlohmann/json.hpp',
           'https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp'
         ], 'namespace nlohmann')
       ]);
